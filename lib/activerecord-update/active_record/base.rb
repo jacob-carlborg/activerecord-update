@@ -22,6 +22,17 @@ module ActiveRecord
           connection.quote(value)
         end
       end
+
+      # Returns the changed attribute names of the given records.
+      #
+      # @param records [<ActiveModel::Dirty>] the records to return the changed
+      #   attributes for
+      #
+      # @return [Set<String>] a list of the names of the attributes that have
+      #   changed
+      def changed_attributes(records)
+        Set.new(records.flat_map(&:changed))
+      end
     end
   end
 end
