@@ -13,3 +13,4 @@ Style/MultilineMethodCallIndentation:
 Metrics/BlockLength:
   Exclude:
     - activerecord-update.gemspec
+    - spec/**/*_spec.rb
