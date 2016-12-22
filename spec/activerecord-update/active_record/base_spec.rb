@@ -112,4 +112,35 @@ describe ActiveRecord::Base do
       end
     end
   end
+
+  describe 'changed_attributes_for_sql' do
+    let(:table_alias) { 'alias' }
+    let(:connection) { double(:connection) }
+
+    before(:each) do
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:quote_column_name) { |value| %("#{value}") }
+    end
+
+    def changed_attributes_for_sql
+      subject.send(:changed_attributes_for_sql, changed_attributes, table_alias)
+    end
+
+    context 'when the changed attributes list is empty' do
+      let(:changed_attributes) { Set.new }
+
+      it 'raises an ArgumentError error' do
+        expect { changed_attributes_for_sql }.to raise_error(ArgumentError)
+      end
+    end
+
+    context 'when the changed attributes list is non-empty' do
+      let(:changed_attributes) { Set.new(%w(foo bar)) }
+
+      it 'formats the attributes for SQL' do
+        expected = %("foo" = #{table_alias}."foo", "bar" = #{table_alias}."bar")
+        expect(changed_attributes_for_sql).to eq(expected)
+      end
+    end
+  end
 end

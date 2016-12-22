@@ -33,6 +33,23 @@ module ActiveRecord
       def changed_attributes(records)
         Set.new(records.flat_map(&:changed))
       end
+
+      # Returns the given changed attributes formatted for SQL.
+      #
+      # @param changed_attributes [Set<String>] the attributes that have changed
+      # @param table_alias [String] an alias for the table name
+      #
+      # @return [String] the changed attributes formatted for SQL
+      # @raise [ArgumentError] if the given list is `nil` or empty
+      def changed_attributes_for_sql(changed_attributes, table_alias)
+        if changed_attributes.blank?
+          raise ArgumentError, 'No changed attributes given'
+        end
+
+        changed_attributes
+          .map { |e| connection.quote_column_name(e) }
+          .map { |e| "#{e} = #{table_alias}.#{e}" }.join(', ')
+      end
     end
   end
 end
