@@ -102,6 +102,28 @@ module ActiveRecord
           .join(', ')
       end
       # rubocop:enable Metrics/AbcSize
+
+      # Returns the given column names formatted for SQL.
+      #
+      # @example
+      #   ActiveRecord::Base.send(:column_names_for_sql, 'id', %w(foo bar))
+      #   # => '"id", "foo", "bar"'
+      #
+      # @param primary_key [String] the primary key of the table
+      # @param column_names [<String>] the name of the columns
+      #
+      # @return [String] the column names formatted for SQL
+      #
+      # @raise [ArgumentError]
+      #   * If the given primary key is `nil` or empty
+      #   * If the given list of column names is `nil` or empty
+      def column_names_for_sql(primary_key, column_names)
+        raise ArgumentError, 'No primary key given' if primary_key.blank?
+        raise ArgumentError, 'No column names given' if column_names.blank?
+
+        sql_columns = (Set.new([primary_key]) + column_names).to_a
+        sql_columns.map! { |e| connection.quote_column_name(e) }.join(', ')
+      end
     end
   end
 end

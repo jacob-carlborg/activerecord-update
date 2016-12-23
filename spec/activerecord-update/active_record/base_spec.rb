@@ -270,4 +270,59 @@ describe ActiveRecord::Base do
       end
     end
   end
+
+  describe 'column_names_for_sql' do
+    let(:primary_key) { 'id' }
+    let(:column_names) { Set.new(%w(foo bar)) }
+    let(:connection) { double(:connection) }
+
+    before(:each) do
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:quote_column_name) { |v| %("#{v}") }
+    end
+
+    def column_names_for_sql
+      subject.send(:column_names_for_sql, primary_key, column_names)
+    end
+
+    it 'returns the column names formatted for SQL' do
+      expect(column_names_for_sql).to eq('"id", "foo", "bar"')
+    end
+
+    context 'when the primary key is nil' do
+      let(:primary_key) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No primary key given'
+        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the primary key is empty' do
+      let(:primary_key) { '' }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No primary key given'
+        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the given list of changed attributes is nil' do
+      let(:column_names) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No column names given'
+        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the given list of changed attributes is empty' do
+      let(:column_names) { [] }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No column names given'
+        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+      end
+    end
+  end
 end
