@@ -3,6 +3,31 @@ require 'spec_helper'
 describe ActiveRecord::Base do
   subject { ActiveRecord::Base }
 
+  # rubocop:disable Style/ClassAndModuleChildren
+  class self::Model
+    include ActiveModel::Model
+
+    attr_accessor :id
+    attr_accessor :foo
+    attr_accessor :bar
+
+    def slice(*keys)
+      hash = { id: id, foo: foo, bar: bar }
+      ActiveSupport::HashWithIndifferentAccess.new(hash).slice(*keys)
+    end
+  end
+  # rubocop:enable Style/ClassAndModuleChildren
+
+  def define_model
+    base = self.class
+    base = base.superclass until base.const_defined?('Model')
+    stub_const('Model', base::Model)
+  end
+
+  before(:each) do
+    define_model
+  end
+
   describe 'quote' do
     def quote
       subject.send(:quote, value)
@@ -40,12 +65,9 @@ describe ActiveRecord::Base do
   end
 
   describe 'changed_attributes' do
-    class Model
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Model < superclass::Model
       include ActiveModel::Dirty
-      include ActiveModel::Model
-
-      attr_reader :foo
-      attr_reader :bar
 
       define_attribute_methods :foo, :bar
 
@@ -59,6 +81,7 @@ describe ActiveRecord::Base do
         @bar = value
       end
     end
+    # rubocop:enable Style/ClassAndModuleChildren
 
     def changed_attributes
       subject.send(:changed_attributes, records)
@@ -140,6 +163,110 @@ describe ActiveRecord::Base do
       it 'formats the attributes for SQL' do
         expected = %("foo" = #{table_alias}."foo", "bar" = #{table_alias}."bar")
         expect(changed_attributes_for_sql).to eq(expected)
+      end
+    end
+  end
+
+  describe 'values_for_sql' do
+    let(:primary_key) { 'id' }
+    let(:changed_attributes) { Set.new(%w(foo bar)) }
+    let(:connection) { double(:connection) }
+
+    let(:records) do
+      [
+        Model.new(id: 1, foo: 3, bar: 4),
+        Model.new(id: 2, foo: 5, bar: 6)
+      ]
+    end
+
+    before(:each) do
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:quote) { |v| v }
+    end
+
+    def values_for_sql
+      subject.send(:values_for_sql, records, changed_attributes, primary_key)
+    end
+
+    it 'returns the changed values formatted for SQL' do
+      expect(values_for_sql).to eq('(1, 3, 4), (2, 5, 6)')
+    end
+
+    context 'when the values need quoting' do
+      let(:records) do
+        [
+          Model.new(id: 1, foo: "fo'o"),
+          Model.new(id: 2, bar: "ba'r")
+        ]
+      end
+
+      before(:each) do
+        allow(connection).to receive(:quote) do |value|
+          case value
+          when nil then 'NULL'
+          when "fo'o" then "'fo''o'"
+          when "ba'r" then "'ba''r'"
+          else value
+          end
+        end
+      end
+
+      it 'properly quotes the values' do
+        expect(values_for_sql).to eq("(1, 'fo''o', NULL), (2, NULL, 'ba''r')")
+      end
+    end
+
+    context 'when the given list of records is nil' do
+      let(:records) { nil }
+
+      it 'raises a "No changed records given" error' do
+        error_message = 'No changed records given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of records is empty' do
+      let(:records) { [] }
+
+      it 'raises a "No changed records given" error' do
+        error_message = 'No changed records given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of changed attributes is nil' do
+      let(:changed_attributes) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No changed attributes given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of changed attributes is empty' do
+      let(:changed_attributes) { [] }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No changed attributes given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the primary key is nil' do
+      let(:primary_key) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No primary key given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the primary key is empty' do
+      let(:primary_key) { '' }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No primary key given'
+        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
       end
     end
   end
