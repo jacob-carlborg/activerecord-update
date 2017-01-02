@@ -28,6 +28,158 @@ describe ActiveRecord::Base do
     define_model
   end
 
+  describe 'sql_for_update_records' do
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Model < superclass::Model
+      include ActiveModel::Dirty
+
+      define_attribute_methods :id, :foo, :bar
+
+      def id=(value)
+        id_will_change! unless value == @id
+        @id = value
+      end
+
+      def foo=(value)
+        foo_will_change! unless value == @foo
+        @foo = value
+      end
+
+      def bar=(value)
+        bar_will_change! unless value == @bar
+        @bar = value
+      end
+    end
+
+    class self::Foo < ActiveRecord::Base
+    end
+    # rubocop:enable Style/ClassAndModuleChildren
+
+    before(:each) do
+      stub_const('Foo', self.class::Foo)
+    end
+
+    subject { Foo }
+
+    let(:connection) { double(:connection) }
+    let(:schema_cache) { double(:schema_cache) }
+    let(:arel_table) { double(:arel_table) }
+    let(:primary_key) { 'id' }
+
+    let(:records) do
+      [
+        Model.new(id: 1, foo: 4, bar: 5),
+        Model.new(id: 2, foo: 2, bar: 3)
+      ]
+    end
+
+    let(:changed_attributes) { Set.new(%w(id foo bar)) }
+    let(:quoted_table_alias) { 'foos_2' }
+    let(:values_for_sql) { '(1, 4, 5), (2, 2, 3)' }
+    let(:column_names_for_sql) { '"id", "foo", "bar"' }
+
+    let(:changed_attributes_for_sql) do
+      '"id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"'
+    end
+
+    before(:each) do
+      quote = ->(value) { %("#{value}") }
+
+      # connection
+      allow(connection).to receive(:quote_table_name, &quote)
+      allow(connection).to receive(:quote_column_name, &quote)
+      allow(connection).to receive(:quote, &:to_s)
+      allow(connection).to receive(:schema_cache).and_return(schema_cache)
+
+      # schema_cache
+      allow(schema_cache).to receive(:table_exists?).and_return(true)
+      allow(schema_cache).to receive(:primary_keys).and_return(primary_key)
+
+      # subject
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(subject).to receive(:values_for_sql).and_return(values_for_sql)
+
+      allow(subject).to receive(:changed_attributes)
+        .and_return(changed_attributes)
+
+      allow(subject).to receive(:quoted_table_alias)
+        .and_return(quoted_table_alias)
+
+      allow(subject).to receive(:changed_attributes_for_sql)
+        .and_return(changed_attributes_for_sql)
+
+      allow(subject).to receive(:column_names_for_sql)
+        .and_return(column_names_for_sql)
+    end
+
+    def sql_for_update_records
+      subject.send(:sql_for_update_records, records)
+    end
+
+    it 'returns the SQL used for the "update_records" method' do
+      expected = <<-SQL.strip_heredoc.strip
+        UPDATE "foos" SET
+          "id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"
+        FROM (
+          VALUES (1, 4, 5), (2, 2, 3)
+        )
+        AS foos_2("id", "foo", "bar")
+        WHERE "foos"."id" = foos_2."id"
+        RETURNING "foos"."id"
+      SQL
+
+      expect(sql_for_update_records).to eq(expected)
+    end
+
+    it 'calls "changed_attributes" with the given records' do
+      expect(subject).to receive(:changed_attributes).with(records)
+      sql_for_update_records
+    end
+
+    it 'calls "changed_attributes_for_sql" with the changed attributes' do
+      expect(subject).to receive(:changed_attributes_for_sql)
+        .with(changed_attributes, quoted_table_alias)
+
+      sql_for_update_records
+    end
+
+    it 'calls "quoted_table_alias"' do
+      expect(subject).to receive(:quoted_table_alias)
+      sql_for_update_records
+    end
+
+    it 'calls "values_for_sql" with the records and the changed attributes' do
+      expect(subject).to receive(:values_for_sql)
+        .with(records, changed_attributes, primary_key)
+
+      sql_for_update_records
+    end
+
+    it 'calls "column_names_for_sql" with the primary key and changed '\
+      'attributes' do
+      expect(subject).to receive(:column_names_for_sql)
+        .with(primary_key, changed_attributes)
+
+      sql_for_update_records
+    end
+
+    it 'calls "format"' do
+      sql = subject.const_get('UPDATE_RECORDS_SQL_TEMPLATE')
+
+      options = {
+        table: subject.quoted_table_name,
+        set_columns: changed_attributes_for_sql,
+        values: values_for_sql,
+        alias: quoted_table_alias,
+        columns: column_names_for_sql,
+        primary_key: subject.quoted_primary_key
+      }
+
+      expect(subject).to receive(:format).with(sql, options)
+      sql_for_update_records
+    end
+  end
+
   describe 'quoted_table_alias' do
     let(:connection) { double(:connection) }
 

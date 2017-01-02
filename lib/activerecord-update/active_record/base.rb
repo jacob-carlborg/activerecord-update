@@ -1,7 +1,94 @@
 module ActiveRecord
   class Base
+    UPDATE_RECORDS_SQL_TEMPLATE = <<-SQL.strip_heredoc.strip.freeze
+      UPDATE %{table} SET
+        %{set_columns}
+      FROM (
+        VALUES %{values}
+      )
+      AS %{alias}(%{columns})
+      WHERE %{table}.%{primary_key} = %{alias}.%{primary_key}
+      RETURNING %{table}.%{primary_key}
+    SQL
+
+    private_constant :UPDATE_RECORDS_SQL_TEMPLATE
+
     class << self
       private
+
+      # Builds the SQL query used by the {#update_records} method.
+      #
+      # @example
+      #   class Model
+      #     include ActiveModel::Model
+      #     include ActiveModel::Dirty
+      #
+      #     attr_accessor :id, :foo, :bar
+      #     define_attribute_methods :id, :foo, :bar
+      #
+      #     def slice(*keys)
+      #       attributes = { id: id, foo: foo, bar: bar }
+      #       hash = ActiveSupport::HashWithIndifferentAccess.new(attributes)
+      #       hash.slice(*keys)
+      #     end
+      #
+      #     def id=(value)
+      #       id_will_change! unless value == @id
+      #       @id = value
+      #     end
+      #
+      #     def foo=(value)
+      #       foo_will_change! unless value == @foo
+      #       @foo = value
+      #     end
+      #
+      #     def bar=(value)
+      #       bar_will_change! unless value == @bar
+      #       @bar = value
+      #     end
+      #   end
+      #
+      #   record1 = Model.new(id: 1, foo: 4, bar: 5)
+      #   record2 = Model.new(id: 2, foo: 2, bar: 3)
+      #   records = [record1, record2]
+      #
+      #   ActiveRecord::Base.send(:sql_for_update_records, records)
+      #   # =>
+      #   # UPDATE "foos" SET
+      #   # "id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar
+      #   # FROM (
+      #   #   VALUES (1, 4, 5), (2, 2, 3)
+      #   # )
+      #   # AS foos_2("id", "foo", "bar")
+      #   # WHERE "foos"."id" = foos_2."id"
+      #   # RETURNING "foos"."id";
+      #
+      # @param records [<ActiveRecord::Base>] the records that have changed
+      # @return the SQL query for the #{update_records} method
+      # @see #update_records
+      # rubocop:disable Metrics/MethodLength
+      def sql_for_update_records(records)
+        changed_attrs = changed_attributes(records)
+        quoted_changed_attributes = changed_attributes_for_sql(
+          changed_attrs, quoted_table_alias
+        )
+
+        quoted_values = values_for_sql(records, changed_attrs, primary_key)
+        quoted_column_names = column_names_for_sql(
+          primary_key, changed_attrs
+        )
+
+        format(
+          UPDATE_RECORDS_SQL_TEMPLATE,
+          table: quoted_table_name,
+          set_columns: quoted_changed_attributes,
+          values: quoted_values,
+          alias: quoted_table_alias,
+          columns: quoted_column_names,
+          primary_key: quoted_primary_key
+        )
+      end
+      # rubocop:enable Metrics/MethodLength
 
       # @return [String] the table alias quoted.
       def quoted_table_alias

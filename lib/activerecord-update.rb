@@ -1,4 +1,6 @@
 # rubocop:disable Style/FileName
+
+require 'active_support/core_ext/string/strip'
 require 'active_record'
 
 require 'activerecord-update/version'
