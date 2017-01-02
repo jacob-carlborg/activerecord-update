@@ -16,6 +16,14 @@ module ActiveRecord
     class << self
       private
 
+      # Returns the given records that are not new records and have changed.
+      #
+      # @param records [<ActiveRecord::Base>] the records to filter
+      # @return that records that are not new records and have changed
+      def changed_records(records)
+        records.reject(&:new_record?).select(&:changed?)
+      end
+
       # Builds the SQL query used by the {#update_records} method.
       #
       # @example

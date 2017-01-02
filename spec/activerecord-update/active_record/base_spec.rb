@@ -28,6 +28,67 @@ describe ActiveRecord::Base do
     define_model
   end
 
+  describe 'changed_records' do
+    self::Model = Struct.new(:changed?, :new_record?) do
+      def initialize(params = {})
+        params.each { |k, v| public_send(:"#{k}=", v) }
+      end
+    end
+
+    before(:each) do
+      stub_const('Model', self.class::Model)
+    end
+
+    def changed_records
+      subject.send(:changed_records, records)
+    end
+
+    context 'when the records contain new records' do
+      let(:records) { [Model.new(new_record?: true, changed?: true)] }
+
+      it 'filters out the new records' do
+        expect(changed_records).to be_empty
+      end
+    end
+
+    context 'when the records contain unchanged records' do
+      let(:records) { [Model.new(new_record?: false, changed?: false)] }
+
+      it 'filters out the unchanged records' do
+        expect(changed_records).to be_empty
+      end
+    end
+
+    context 'when the records contain changed and no new records' do
+      let(:records) { [Model.new(new_record?: false, changed?: true)] }
+
+      it 'returns the records' do
+        expect(changed_records).to eq(records)
+      end
+    end
+
+    context 'when the records contain a mixture of records' do
+      let(:expected_records) do
+        [
+          Model.new(new_record?: false, changed?: true),
+          Model.new(new_record?: false, changed?: true)
+        ]
+      end
+
+      let(:records) do
+        [
+          Model.new(new_record?: true, changed?: true),
+          Model.new(new_record?: false, changed?: false),
+          *expected_records
+        ]
+      end
+
+      it 'filters out the unchanged and the new records' do
+        expect(changed_records).to eq(expected_records)
+      end
+    end
+  end
+
   describe 'sql_for_update_records' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Model < superclass::Model
