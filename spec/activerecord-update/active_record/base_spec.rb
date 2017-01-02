@@ -28,6 +28,36 @@ describe ActiveRecord::Base do
     define_model
   end
 
+  describe 'quoted_table_alias' do
+    let(:connection) { double(:connection) }
+
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Foo < ActiveRecord::Base
+    end
+    # rubocop:enable Style/ClassAndModuleChildren
+
+    subject { Foo }
+
+    let(:quote_table_name) { '"foos_2"' }
+
+    before(:each) do
+      stub_const('Foo', self.class::Foo)
+
+      allow(subject).to receive(:connection).and_return(connection)
+
+      allow(connection).to receive(:quote_table_name)
+        .and_return(quote_table_name)
+    end
+
+    def quoted_table_alias
+      subject.send(:quoted_table_alias)
+    end
+
+    it 'returns the table alias quoted' do
+      expect(quoted_table_alias).to eq(quote_table_name)
+    end
+  end
+
   describe 'quote' do
     def quote
       subject.send(:quote, value)

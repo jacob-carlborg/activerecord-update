@@ -3,6 +3,12 @@ module ActiveRecord
     class << self
       private
 
+      # @return [String] the table alias quoted.
+      def quoted_table_alias
+        @quoted_table_alias ||=
+          connection.quote_table_name(arel_table.alias.name)
+      end
+
       # Quotes/escapes the given column value to prevent SQL injection attacks.
       #
       # This is an PostgreSQL specific method which properly handles quoting of
