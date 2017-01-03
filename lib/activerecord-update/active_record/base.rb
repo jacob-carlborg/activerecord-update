@@ -24,6 +24,17 @@ module ActiveRecord
         records.reject(&:new_record?).select(&:changed?)
       end
 
+      # Validates the given records.
+      #
+      # @param records [<ActiveModel::Validations>] the records to validate
+      #
+      # @return [(<ActiveModel::Validations>, <ActiveModel::Validations>)]
+      #   a tuple where the first element is an array of records that are valid.
+      #   The second element is an array of the invalid records
+      def validate_records(records)
+        records.partition(&:valid?)
+      end
+
       # Builds the SQL query used by the {#update_records} method.
       #
       # @example

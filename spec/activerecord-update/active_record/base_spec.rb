@@ -89,6 +89,53 @@ describe ActiveRecord::Base do
     end
   end
 
+  describe 'validate_records' do
+    let(:model) { Struct.new(:valid?) }
+
+    def validate_records
+      subject.send(:validate_records, records)
+    end
+
+    context 'when no records are valid' do
+      let(:records) { [model.new(false), model.new(false)] }
+
+      it 'returns a tuple where the first element is an empty array' do
+        expect(validate_records.first).to be_empty
+      end
+
+      it 'adds all the records to the second element of the returned tuple' do
+        expect(validate_records.second).to match_array(records)
+      end
+    end
+
+    context 'when all records are valid' do
+      let(:records) { [model.new(true), model.new(true)] }
+
+      it 'adds all the records to the frist element of the returned tuple' do
+        expect(validate_records.first).to match_array(records)
+      end
+
+      it 'returns a tuple where the second element is an empty array' do
+        expect(validate_records.second).to be_empty
+      end
+    end
+
+    context 'when some of the records are valid' do
+      let(:valid) { model.new(true) }
+      let(:invalid) { model.new(false) }
+      let(:records) { [invalid, valid] }
+
+      it 'adds the valid records to the frist element of the returned tuple' do
+        expect(validate_records.first).to contain_exactly(valid)
+      end
+
+      it 'adds the invalid records to the second element of the returned ' \
+        'tuple' do
+        expect(validate_records.second).to contain_exactly(invalid)
+      end
+    end
+  end
+
   describe 'sql_for_update_records' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Model < superclass::Model
