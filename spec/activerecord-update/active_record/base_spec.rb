@@ -125,7 +125,21 @@ describe ActiveRecord::Base do
     let(:connection) { double(:connection) }
     let(:schema_cache) { double(:schema_cache) }
     let(:arel_table) { double(:arel_table) }
+
     let(:primary_key) { 'id' }
+    let(:timestamp) { Time.at(0).utc }
+    let(:changed_attributes) { Set.new(%w(id foo bar)) }
+    let(:quoted_table_alias) { 'foos_2' }
+    let(:column_names_for_sql) { '"id", "foo", "bar"' }
+
+    let(:values_for_sql) do
+      "(1, 4, 5, '1970-01-01 00:00:00.000000'), " \
+      "(2, 2, 3, '1970-01-01 00:00:00.000000')"
+    end
+
+    let(:changed_attributes_for_sql) do
+      '"id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"'
+    end
 
     let(:records) do
       [
@@ -134,13 +148,11 @@ describe ActiveRecord::Base do
       ]
     end
 
-    let(:changed_attributes) { Set.new(%w(id foo bar)) }
-    let(:quoted_table_alias) { 'foos_2' }
-    let(:values_for_sql) { '(1, 4, 5), (2, 2, 3)' }
-    let(:column_names_for_sql) { '"id", "foo", "bar"' }
-
-    let(:changed_attributes_for_sql) do
-      '"id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"'
+    let(:changed_values) do
+      [
+        [1, 4, 5, timestamp],
+        [2, 2, 3, timestamp]
+      ]
     end
 
     before(:each) do
@@ -158,6 +170,7 @@ describe ActiveRecord::Base do
 
       # subject
       allow(subject).to receive(:connection).and_return(connection)
+      allow(subject).to receive(:changed_values).and_return(changed_values)
       allow(subject).to receive(:values_for_sql).and_return(values_for_sql)
 
       allow(subject).to receive(:changed_attributes)
@@ -174,7 +187,7 @@ describe ActiveRecord::Base do
     end
 
     def sql_for_update_records
-      subject.send(:sql_for_update_records, records)
+      subject.send(:sql_for_update_records, records, timestamp)
     end
 
     it 'returns the SQL used for the "update_records" method' do
@@ -182,7 +195,7 @@ describe ActiveRecord::Base do
         UPDATE "foos" SET
           "id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"
         FROM (
-          VALUES (1, 4, 5), (2, 2, 3)
+          VALUES (1, 4, 5, '1970-01-01 00:00:00.000000'), (2, 2, 3, '1970-01-01 00:00:00.000000')
         )
         AS foos_2("id", "foo", "bar")
         WHERE "foos"."id" = foos_2."id"
@@ -209,10 +222,15 @@ describe ActiveRecord::Base do
       sql_for_update_records
     end
 
-    it 'calls "values_for_sql" with the records and the changed attributes' do
-      expect(subject).to receive(:values_for_sql)
-        .with(records, changed_attributes, primary_key)
+    it 'calls "changed_values" with the records and the changed attributes' do
+      expect(subject).to receive(:changed_values)
+        .with(records, primary_key, changed_attributes, timestamp)
 
+      sql_for_update_records
+    end
+
+    it 'calls "values_for_sql" with the records and the changed attributes' do
+      expect(subject).to receive(:values_for_sql).with(changed_values)
       sql_for_update_records
     end
 
@@ -238,6 +256,35 @@ describe ActiveRecord::Base do
 
       expect(subject).to receive(:format).with(sql, options)
       sql_for_update_records
+    end
+  end
+
+  describe 'current_time' do
+    let(:now) { Time.at(0) }
+
+    before(:each) do
+      allow(Time).to receive(:now).and_return(now)
+      allow(subject).to receive(:default_timezone).and_return(default_timezone)
+    end
+
+    def current_time
+      subject.send(:current_time)
+    end
+
+    context 'when the ActiveRecord default timezone is UTC' do
+      let(:default_timezone) { :utc }
+
+      it 'returns the current time in UTC' do
+        expect(current_time).to eq(now.getutc)
+      end
+    end
+
+    context 'when the ActiveRecord default timezone is local' do
+      let(:default_timezone) { :local }
+
+      it 'returns the current time in the local timezone' do
+        expect(current_time).to eq(now)
+      end
     end
   end
 
@@ -350,7 +397,11 @@ describe ActiveRecord::Base do
       let(:records) { [Model.new(foo: 3)] }
 
       it 'returns a list containing the name of the changed attribute' do
-        expect(changed_attributes).to contain_exactly('foo')
+        expect(changed_attributes).to match_array(%w(foo updated_at))
+      end
+
+      it 'includes the "updated_at" attribute in the returned list' do
+        expect(changed_attributes).to include('updated_at')
       end
     end
 
@@ -358,7 +409,11 @@ describe ActiveRecord::Base do
       let(:records) { [Model.new(foo: 3, bar: 4)] }
 
       it 'returns a list containing both of the changed attributes' do
-        expect(changed_attributes).to match_array(%w(foo bar))
+        expect(changed_attributes).to match_array(%w(foo bar updated_at))
+      end
+
+      it 'includes the "updated_at" attribute in the returned list' do
+        expect(changed_attributes).to include('updated_at')
       end
     end
 
@@ -366,7 +421,11 @@ describe ActiveRecord::Base do
       let(:records) { [Model.new(foo: 3), Model.new(bar: 4)] }
 
       it 'returns a list containing both of the changed attributes' do
-        expect(changed_attributes).to match_array(%w(foo bar))
+        expect(changed_attributes).to match_array(%w(foo bar updated_at))
+      end
+
+      it 'includes the "updated_at" attribute in the returned list' do
+        expect(changed_attributes).to include('updated_at')
       end
     end
 
@@ -374,7 +433,11 @@ describe ActiveRecord::Base do
       let(:records) { [Model.new(foo: 3), Model.new(foo: 4)] }
 
       it 'returns a list containing the changed attribute once' do
-        expect(changed_attributes).to contain_exactly('foo')
+        expect(changed_attributes).to match_array(%w(foo updated_at))
+      end
+
+      it 'includes the "updated_at" attribute in the returned list' do
+        expect(changed_attributes).to include('updated_at')
       end
     end
   end
@@ -410,9 +473,10 @@ describe ActiveRecord::Base do
     end
   end
 
-  describe 'values_for_sql' do
+  describe 'changed_values' do
     let(:primary_key) { 'id' }
     let(:changed_attributes) { Set.new(%w(foo bar)) }
+    let(:updated_at) { Time.at(0) }
     let(:connection) { double(:connection) }
 
     let(:records) do
@@ -427,8 +491,106 @@ describe ActiveRecord::Base do
       allow(connection).to receive(:quote) { |v| v }
     end
 
+    def changed_values
+      subject.send(
+        :changed_values, records, primary_key, changed_attributes, updated_at
+      )
+    end
+
+    it 'returns the changed values' do
+      expected = [
+        [1, 3, 4, updated_at],
+        [2, 5, 6, updated_at]
+      ]
+
+      expect(changed_values).to eq(expected)
+    end
+
+    context 'when only few attributes have changed' do
+      let(:changed_attributes) { Set.new(%w(bar)) }
+
+      it 'returns the values only for the changed attributes' do
+        expected = [
+          [1, 4, updated_at],
+          [2, 6, updated_at]
+        ]
+
+        expect(changed_values).to eq(expected)
+      end
+    end
+
+    context 'when the given list of records is nil' do
+      let(:records) { nil }
+
+      it 'raises a "No changed records given" error' do
+        error_message = 'No changed records given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of records is empty' do
+      let(:records) { [] }
+
+      it 'raises a "No changed records given" error' do
+        error_message = 'No changed records given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of changed attributes is nil' do
+      let(:changed_attributes) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No changed attributes given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the given list of changed attributes is empty' do
+      let(:changed_attributes) { [] }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No changed attributes given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the primary key is nil' do
+      let(:primary_key) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No primary key given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+
+    context 'when the primary key is empty' do
+      let(:primary_key) { '' }
+
+      it 'raises a "No changed attributes given" error' do
+        error_message = 'No primary key given'
+        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      end
+    end
+  end
+
+  describe 'values_for_sql' do
+    let(:connection) { double(:connection) }
+
+    let(:changed_values) do
+      [
+        [1, 3, 4],
+        [2, 5, 6]
+      ]
+    end
+
+    before(:each) do
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:quote) { |v| v }
+    end
+
     def values_for_sql
-      subject.send(:values_for_sql, records, changed_attributes, primary_key)
+      subject.send(:values_for_sql, changed_values)
     end
 
     it 'returns the changed values formatted for SQL' do
@@ -436,10 +598,10 @@ describe ActiveRecord::Base do
     end
 
     context 'when the values need quoting' do
-      let(:records) do
+      let(:changed_values) do
         [
-          Model.new(id: 1, foo: "fo'o"),
-          Model.new(id: 2, bar: "ba'r")
+          [1, "fo'o", nil],
+          [2, nil, "ba'r"]
         ]
       end
 
@@ -459,56 +621,20 @@ describe ActiveRecord::Base do
       end
     end
 
-    context 'when the given list of records is nil' do
-      let(:records) { nil }
-
-      it 'raises a "No changed records given" error' do
-        error_message = 'No changed records given'
-        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
-      end
-    end
-
-    context 'when the given list of records is empty' do
-      let(:records) { [] }
-
-      it 'raises a "No changed records given" error' do
-        error_message = 'No changed records given'
-        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
-      end
-    end
-
-    context 'when the given list of changed attributes is nil' do
-      let(:changed_attributes) { nil }
+    context 'when the given list of changed values is nil' do
+      let(:changed_values) { nil }
 
       it 'raises a "No changed attributes given" error' do
-        error_message = 'No changed attributes given'
+        error_message = 'No changed values given'
         expect { values_for_sql }.to raise_error(ArgumentError, error_message)
       end
     end
 
-    context 'when the given list of changed attributes is empty' do
-      let(:changed_attributes) { [] }
+    context 'when the given list of changed values is empty' do
+      let(:changed_values) { [] }
 
       it 'raises a "No changed attributes given" error' do
-        error_message = 'No changed attributes given'
-        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
-      end
-    end
-
-    context 'when the primary key is nil' do
-      let(:primary_key) { nil }
-
-      it 'raises a "No changed attributes given" error' do
-        error_message = 'No primary key given'
-        expect { values_for_sql }.to raise_error(ArgumentError, error_message)
-      end
-    end
-
-    context 'when the primary key is empty' do
-      let(:primary_key) { '' }
-
-      it 'raises a "No changed attributes given" error' do
-        error_message = 'No primary key given'
+        error_message = 'No changed values given'
         expect { values_for_sql }.to raise_error(ArgumentError, error_message)
       end
     end

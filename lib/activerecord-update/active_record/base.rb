@@ -72,19 +72,21 @@ module ActiveRecord
       #   # RETURNING "foos"."id";
       #
       # @param records [<ActiveRecord::Base>] the records that have changed
+      # @param timestamp [Time] the timestamp used for the `updated_at` column
+      #
       # @return the SQL query for the #{update_records} method
+      #
       # @see #update_records
       # rubocop:disable Metrics/MethodLength
-      def sql_for_update_records(records)
-        changed_attrs = changed_attributes(records)
+      def sql_for_update_records(records, timestamp)
+        attributes = changed_attributes(records)
         quoted_changed_attributes = changed_attributes_for_sql(
-          changed_attrs, quoted_table_alias
+          attributes, quoted_table_alias
         )
 
-        quoted_values = values_for_sql(records, changed_attrs, primary_key)
-        quoted_column_names = column_names_for_sql(
-          primary_key, changed_attrs
-        )
+        values = changed_values(records, primary_key, attributes, timestamp)
+        quoted_values = values_for_sql(values)
+        quoted_column_names = column_names_for_sql(primary_key, attributes)
 
         format(
           UPDATE_RECORDS_SQL_TEMPLATE,
@@ -97,6 +99,11 @@ module ActiveRecord
         )
       end
       # rubocop:enable Metrics/MethodLength
+
+      # @return [Time] the current time in the ActiveRecord timezone.
+      def current_time
+        default_timezone == :utc ? Time.now.getutc : Time.now
+      end
 
       # @return [String] the table alias quoted.
       def quoted_table_alias
@@ -132,7 +139,8 @@ module ActiveRecord
       # @return [Set<String>] a list of the names of the attributes that have
       #   changed
       def changed_attributes(records)
-        Set.new(records.flat_map(&:changed))
+        changed = Set.new(records.flat_map(&:changed))
+        changed.empty? ? changed : changed << 'updated_at'
       end
 
       # Returns the given changed attributes formatted for SQL.
@@ -152,8 +160,7 @@ module ActiveRecord
           .map { |e| "#{e} = #{table_alias}.#{e}" }.join(', ')
       end
 
-      # Returns the values of the given records that have changed, formatted for
-      # SQL.
+      # Returns the values of the given records that have changed.
       #
       # @example
       #   class Model
@@ -172,21 +179,26 @@ module ActiveRecord
       #   record2 = Model.new(id: 2, bar: 4)
       #   records = [record1, record2]
       #
-      #   ActiveRecord::Base.send(:values_for_sql, records, 'id')
-      #   # => "(1, 3, NULL), (2, NULL, 4)"
+      #   changed_attributes = Set.new(%w(foo bar))
+      #   ActiveRecord::Base.send(
+      #     :changed_values, records, changed_attributes, 'id', Time.at(0)
+      #   )
+      #   # => [
+      #   #   [1, 3, nil, 1970-01-01 01:00:00 +0100],
+      #   #   [2, nil, 4, 1970-01-01 01:00:00 +0100]
+      #   # ]
       #
       # @param records [<ActiveRecord::Base>] the records that have changed
-      # @param changed_attributes [Set<String>] the attributes that have changed
       # @param primary_key [String] the primary key of the table
+      # @param changed_attributes [Set<String>] the attributes that have changed
+      # @param updated_at [Time] the value of the updated_at column
       #
-      # @return [String] the values formatted for SQL
+      # @return [<<Object>>] the changed values
       #
       # @raise [ArgumentError]
       #   * if the given list of records or changed attributes is `nil` or empty
       #   * If the given primary key is `nil` or empty
-      #
-      # rubocop:disable Metrics/AbcSize
-      def values_for_sql(records, changed_attributes, primary_key)
+      def changed_values(records, primary_key, changed_attributes, updated_at)
         raise ArgumentError, 'No changed records given' if records.blank?
         raise ArgumentError, 'No primary key given' if primary_key.blank?
 
@@ -194,15 +206,40 @@ module ActiveRecord
           raise ArgumentError, 'No changed attributes given'
         end
 
-        # We're using `slice` instead of `changed_attributes` because we need to
-        # include all the changed attributes from all the changed records and
-        # not just the changed attributes for a given record.
-        records
-          .map! { |e| e.slice(primary_key, *changed_attributes).values }
-          .map! { |e| '(' + e.map! { |b| quote(b) }.join(', ') + ')' }
+        extract_changed_values = lambda do |record|
+          # We're using `slice` instead of `changed_attributes` because we need
+          # to include all the changed attributes from all the changed records
+          # and not just the changed attributes for a given record.
+          record.slice(primary_key, *changed_attributes)
+            .merge!('updated_at' => updated_at).values
+        end
+
+        records.map!(&extract_changed_values)
+      end
+
+      # Returns the values of the given records that have changed, formatted for
+      # SQL.
+      #
+      # @example
+      #   changed_values = [
+      #     [1, 3, 4, 1970-01-01 01:00:00 +0100],
+      #     [2, 5, 6, 1970-01-01 01:00:00 +0100]
+      #   ]
+      #   ActiveRecord::Base.send(:values_for_sql, records, 'id')
+      #   # => "(1, 3, NULL), (2, NULL, 4)"
+      #
+      # @param changed_values [<<Object>>] the values that have changed
+      # @return [String] the values formatted for SQL
+      #
+      # @raise [ArgumentError] if the given list of changed values is `nil` or
+      #   empty
+      def values_for_sql(changed_values)
+        raise ArgumentError, 'No changed values given' if changed_values.blank?
+
+        changed_values
+          .map { |e| '(' + e.map { |b| quote(b) }.join(', ') + ')' }
           .join(', ')
       end
-      # rubocop:enable Metrics/AbcSize
 
       # Returns the given column names formatted for SQL.
       #
