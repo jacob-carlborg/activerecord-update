@@ -273,6 +273,19 @@ module ActiveRecord
         sql_columns = (Set.new([primary_key]) + column_names).to_a
         sql_columns.map! { |e| connection.quote_column_name(e) }.join(', ')
       end
+
+      # Updates the `updated_at` attribute for the given records.
+      #
+      # This will only updated the actual Ruby objects, the database should
+      # already have been updated by this point.
+      #
+      # @param records [<ActiveRecord::Base>] the records that should have their
+      #   timestamp updated
+      #
+      # @return [void]
+      def update_timestamp(records, timestamp)
+        records.each { |e| e.updated_at = timestamp }
+      end
     end
   end
 end

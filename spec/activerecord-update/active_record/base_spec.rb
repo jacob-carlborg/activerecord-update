@@ -741,4 +741,19 @@ describe ActiveRecord::Base do
       end
     end
   end
+
+  describe 'update_timestamp' do
+    let(:model) { Struct.new(:updated_at) }
+    let(:records) { [model.new, model.new] }
+    let(:timestamp) { Time.at(0) }
+
+    def update_timestamp
+      subject.send(:update_timestamp, records, timestamp)
+    end
+
+    it 'sets the timestamp for all the records' do
+      result = update_timestamp.map(&:updated_at)
+      expect(result).to contain_exactly(timestamp, timestamp)
+    end
+  end
 end
