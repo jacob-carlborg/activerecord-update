@@ -28,6 +28,122 @@ describe ActiveRecord::Base do
     define_model
   end
 
+  describe 'update_records' do
+    let(:records) { [double(:record)] }
+
+    let(:changed_records) { [double(:changed_record)] }
+    let(:valid) { [double(:valid)] }
+    let(:failed_records) { [double(:failed_record)] }
+    let(:current_time) { double(:current_time) }
+    let(:query) { double(:query) }
+    let(:connection) { double(:connection) }
+    let(:execute_result) { double(:execute_result) }
+    let(:values) { [double(:value)] }
+
+    before(:each) do
+      allow(subject).to receive(:changed_records).and_return(changed_records)
+      allow(subject).to receive(:current_time).and_return(current_time)
+      allow(subject).to receive(:quoted_table_alias).and_return('"foos"')
+      allow(subject).to receive(:sql_for_update_records).and_return(query)
+      allow(subject).to receive(:update_timestamp)
+      allow(subject).to receive(:mark_changes_applied)
+      allow(subject).to receive(:validate_records)
+        .and_return([valid, failed_records])
+
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:execute).and_return(execute_result)
+      allow(execute_result).to receive(:values).and_return(values)
+    end
+
+    def update_records
+      subject.update_records(records)
+    end
+
+    it 'calls "changed_records"' do
+      expect(subject).to receive(:changed_records).with(records)
+      update_records
+    end
+
+    it 'calls "validate_records"' do
+      expect(subject).to receive(:validate_records).with(changed_records)
+      update_records
+    end
+
+    it 'calls "current_time"' do
+      expect(subject).to receive(:current_time)
+      update_records
+    end
+
+    it 'calls "sql_for_update_records"' do
+      expect(subject).to receive(:sql_for_update_records)
+        .with(valid, current_time)
+
+      update_records
+    end
+
+    it 'calls "connection.execute"' do
+      expect(connection).to receive(:execute).with(query)
+      update_records
+    end
+
+    it 'calls "update_timestamp"' do
+      expect(subject).to receive(:update_timestamp).with(valid, current_time)
+      update_records
+    end
+
+    it 'calls "mark_changes_applied"' do
+      expect(subject).to receive(:mark_changes_applied).with(valid)
+      update_records
+    end
+
+    it "returns the updated ID's" do
+      expect(update_records.ids).to eq(values.first)
+    end
+
+    it 'returns the failed records' do
+      expect(update_records.failed_records).to eq(failed_records)
+    end
+
+    context 'when no attributes have changed' do
+      let(:changed_records) { [] }
+      let(:valid) { [] }
+
+      before(:each) do
+        allow(subject).to receive(:sql_for_update_records).and_call_original
+      end
+
+      it 'does not raise any errors' do
+        expect { update_records }.to_not raise_error
+      end
+
+      it 'returns an empty ActiveRecord::Update::Result object' do
+        expect(update_records.updates?).to eq(false)
+      end
+    end
+
+    context 'when attributes have changed' do
+      before(:each) do
+        allow(subject).to receive(:sql_for_update_records).and_call_original
+      end
+
+      context 'when no records are valid' do
+        let(:valid) { [] }
+
+        it 'does not raise any errors' do
+          expect { update_records }.to_not raise_error
+        end
+
+        it 'returns an empty ActiveRecord::Update::Result object' do
+          expect(update_records.updates?).to eq(false)
+        end
+
+        it 'returns the failed objects' do
+          expect(update_records.failed_records).to match_array(failed_records)
+        end
+      end
+    end
+  end
+
   describe 'changed_records' do
     self::Model = Struct.new(:changed?, :new_record?) do
       def initialize(params = {})

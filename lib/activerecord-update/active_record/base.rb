@@ -14,6 +14,49 @@ module ActiveRecord
     private_constant :UPDATE_RECORDS_SQL_TEMPLATE
 
     class << self
+      # Updates a list of records in a single batch.
+      #
+      # This is more efficient than calling `ActiveRecord::Base#save` multiple
+      # times.
+      #
+      # * Only records that have changed will be updated
+      # * All new records will be ignored
+      # * Validations will be performed for all the records
+      # * Only the records for which the validations pass will be updated
+      #
+      # * The union of the changed attributes for all the records will be
+      #   updated
+      #
+      # * The `updated_at` attribute will be updated for all the records that
+      #   where updated
+      #
+      # * All the given records should be of the same type and the same type
+      #   as the class this method is called on
+      #
+      # @example
+      #   Model.update_records(array_of_models)
+      #
+      # @param records [<ActiveRecord::Base>] the records to be updated
+      #
+      # @return [ActiveRecord::Update::Result] the ID's of the records that
+      #   were updated and the records that failed to validate
+      #
+      # @see ActiveRecord::Update::Result
+      def update_records(records)
+        changed = changed_records(records)
+        valid, failed = validate_records(changed)
+        return ActiveRecord::Update::Result.new(valid, failed) if valid.empty?
+
+        timestamp = current_time
+        query = sql_for_update_records(valid, timestamp)
+        ids = connection.execute(query).values.first
+
+        update_timestamp(valid, timestamp)
+        mark_changes_applied(valid)
+
+        ActiveRecord::Update::Result.new(ids, failed)
+      end
+
       private
 
       # Returns the given records that are not new records and have changed.
