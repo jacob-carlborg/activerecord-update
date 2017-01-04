@@ -756,4 +756,38 @@ describe ActiveRecord::Base do
       expect(result).to contain_exactly(timestamp, timestamp)
     end
   end
+
+  describe 'mark_changes_applied' do
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Model < superclass::Model
+      include ActiveModel::Dirty
+
+      define_attribute_methods :foo
+
+      def attribute(_)
+        @foo
+      end
+
+      def foo=(value)
+        foo_will_change! unless value == @foo
+        @foo = value
+      end
+    end
+    # rubocop:end Style/ClassAndModuleChildren
+
+    let(:records) { [Model.new(foo: 1), Model.new(foo: 2)] }
+
+    before(:each) do
+      stub_const('Model', self.class::Model)
+    end
+
+    def mark_changes_applied
+      subject.send(:mark_changes_applied, records)
+    end
+
+    it 'marks the changes applied for all the records' do
+      mark_changes_applied
+      expect(records.none?(&:changed?)).to be true
+    end
+  end
 end

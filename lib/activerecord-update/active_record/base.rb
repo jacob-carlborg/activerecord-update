@@ -286,6 +286,16 @@ module ActiveRecord
       def update_timestamp(records, timestamp)
         records.each { |e| e.updated_at = timestamp }
       end
+
+      # Mark changes applied for the given records.
+      #
+      # @param records [<ActiveModel::Dirty>] the records to mark changes
+      #   applied for
+      #
+      # @return [void]
+      def mark_changes_applied(records)
+        records.each { |e| e.send(:changes_applied) }
+      end
     end
   end
 end
