@@ -1,0 +1,9 @@
+test:
+  adapter: postgresql
+  username: postgres
+  password:
+  encoding: utf8
+  host:     localhost
+  database: activerecord_update_test
+  min_messages: warning
+  prepared_statements: false

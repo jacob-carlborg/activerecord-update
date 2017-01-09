@@ -35,6 +35,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'activesupport', '4.1.9'
 
   spec.add_development_dependency 'bundler', '~> 1.13'
+  spec.add_development_dependency 'pg', '0.18.2'
   spec.add_development_dependency 'pry-rescue', '~> 1.4'
   spec.add_development_dependency 'pry-stack_explorer', '~> 0.4.9'
   spec.add_development_dependency 'rake', '~> 10.0'

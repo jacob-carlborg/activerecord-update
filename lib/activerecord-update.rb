@@ -9,5 +9,8 @@ require 'activerecord-update/active_record/update/result'
 
 module ActiveRecord
   module Update
+    def self.root
+      @root ||= Pathname.new(File.dirname(__FILE__)).join('..')
+    end
   end
 end
