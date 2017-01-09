@@ -300,7 +300,7 @@ module ActiveRecord
             .merge!('updated_at' => updated_at).values
         end
 
-        records.map!(&extract_changed_values)
+        records.map(&extract_changed_values)
       end
 
       # Returns the values of the given records that have changed, formatted for

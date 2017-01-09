@@ -746,6 +746,19 @@ describe ActiveRecord::Base do
   end
 
   describe 'changed_values' do
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Model < superclass::Model
+      # To avoid comparing the `@errors` instance variable. When `dup` is called
+      # `ActiveModel::Validations` will reset the `@errors` instance variable to
+      # `nil` in the `initialize_dup` method. This will cause the existing
+      # records, which don't have this instance variable, to be different from
+      # the dup which will have this instance variable.
+      def ==(other)
+        [id, foo, bar] == [other.id, other.foo, other.bar]
+      end
+    end
+    # rubocop:enable Style/ClassAndModuleChildren
+
     let(:primary_key) { 'id' }
     let(:changed_attributes) { Set.new(%w(foo bar)) }
     let(:updated_at) { Time.at(0) }
@@ -776,6 +789,14 @@ describe ActiveRecord::Base do
       ]
 
       expect(changed_values).to eq(expected)
+    end
+
+    it 'does not change the input records', :aggregate_failures do
+      input = records.deep_dup
+      expect(records).to_not be(input)
+
+      changed_values
+      expect(records).to eq(input)
     end
 
     context 'when only few attributes have changed' do
