@@ -35,15 +35,17 @@ describe ActiveRecord::Base do
     let(:valid) { [double(:valid)] }
     let(:failed_records) { [double(:failed_record)] }
     let(:current_time) { double(:current_time) }
+    let(:primary_key) { 'id' }
+    let(:ids) { [1, 2] }
     let(:query) { double(:query) }
     let(:connection) { double(:connection) }
-    let(:execute_result) { double(:execute_result) }
-    let(:values) { [double(:value)] }
 
     before(:each) do
       allow(subject).to receive(:changed_records).and_return(changed_records)
       allow(subject).to receive(:current_time).and_return(current_time)
       allow(subject).to receive(:quoted_table_alias).and_return('"foos"')
+      allow(subject).to receive(:primary_key).and_return(primary_key)
+      allow(subject).to receive(:perform_update_records_query).and_return(ids)
       allow(subject).to receive(:sql_for_update_records).and_return(query)
       allow(subject).to receive(:update_timestamp)
       allow(subject).to receive(:mark_changes_applied)
@@ -51,8 +53,6 @@ describe ActiveRecord::Base do
         .and_return([valid, failed_records])
 
       allow(subject).to receive(:connection).and_return(connection)
-      allow(connection).to receive(:execute).and_return(execute_result)
-      allow(execute_result).to receive(:values).and_return(values)
     end
 
     def update_records
@@ -81,8 +81,10 @@ describe ActiveRecord::Base do
       update_records
     end
 
-    it 'calls "connection.execute"' do
-      expect(connection).to receive(:execute).with(query)
+    it 'calls "perform_update_records_query"' do
+      expect(subject).to receive(:perform_update_records_query)
+        .with(query, primary_key)
+
       update_records
     end
 
@@ -97,7 +99,7 @@ describe ActiveRecord::Base do
     end
 
     it "returns the updated ID's" do
-      expect(update_records.ids).to eq(values.first)
+      expect(update_records.ids).to eq(ids)
     end
 
     it 'returns the failed records' do
@@ -985,6 +987,63 @@ describe ActiveRecord::Base do
         message = 'No column names given'
         expect { column_names_for_sql }.to raise_error(ArgumentError, message)
       end
+    end
+  end
+
+  describe 'perform_update_records_query' do
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Foo < ActiveRecord::Base
+    end
+    # rubocop:enable Style/ClassAndModuleChildren
+
+    subject { Foo }
+
+    let(:primary_key) { 'id' }
+    let(:query) { double(:query) }
+
+    let(:result) { double(:result) }
+    let(:values) { [['1'], ['2']] }
+
+    let(:connection) { double(:connection) }
+    let(:schema_cache) { double(:schema_cache) }
+
+    let(:columns) { [column.new('id', 'integer')] }
+
+    let(:column) do
+      Struct.new(:name, :sql_type, :primary) do
+        def type_cast(value)
+          value.to_i
+        end
+      end
+    end
+
+    before(:each) do
+      stub_const('Foo', self.class::Foo)
+
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:execute).and_return(result)
+      allow(connection).to receive(:schema_cache).and_return(schema_cache)
+
+      allow(schema_cache).to receive(:columns).and_return(columns)
+      allow(schema_cache).to receive(:table_exists?).and_return(true)
+      allow(schema_cache).to receive(:primary_keys).and_return('id')
+
+      allow(result).to receive(:values).and_return(values)
+    end
+
+    def perform_update_records_query
+      subject.send(:perform_update_records_query, query, primary_key)
+    end
+
+    it 'calls "connection.execute" with the given query', :aggregate_failures do
+      expect(subject).to receive(:connection).and_return(connection)
+      expect(connection).to receive(:execute).with(query)
+
+      perform_update_records_query
+    end
+
+    it 'returns the primary keys of the records that were updated' do
+      expect(perform_update_records_query).to eq([1, 2])
     end
   end
 

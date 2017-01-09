@@ -51,7 +51,7 @@ module ActiveRecord
 
         timestamp = current_time
         query = sql_for_update_records(valid, timestamp)
-        ids = connection.execute(query).values.first
+        ids = perform_update_records_query(query, primary_key)
 
         update_timestamp(valid, timestamp)
         mark_changes_applied(valid)
@@ -347,6 +347,19 @@ module ActiveRecord
 
         sql_columns = (Set.new([primary_key]) + column_names).to_a
         sql_columns.map! { |e| connection.quote_column_name(e) }.join(', ')
+      end
+
+      # Performs the given query and returns the result of the query.
+      #
+      # @param query [String] the query to perform
+      # @param primary_key [String] the primary key
+      #
+      # @return the result of the query, the primary keys of the records what
+      #   were updated
+      def perform_update_records_query(query, primary_key)
+        primary_key_column = columns_hash[primary_key]
+        values = connection.execute(query).values.flatten
+        values.map! { |e| primary_key_column.type_cast(e) }
       end
 
       # Updates the `updated_at` attribute for the given records.
