@@ -2,7 +2,16 @@ sudo: false
 language: ruby
 
 rvm:
-  - 2.4
+  - 2.3.3
   - 2.1.5
 
+cache: bundler
 before_install: gem install bundler -v 1.13.6
+
+before_script:
+  - bundle exec rake db:create
+  - bundle exec rake db:migrate
+
+script:
+  - bundle exec rubocop
+  - bundle exec rspec
