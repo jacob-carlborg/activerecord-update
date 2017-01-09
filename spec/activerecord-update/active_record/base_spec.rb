@@ -289,9 +289,23 @@ describe ActiveRecord::Base do
     let(:schema_cache) { double(:schema_cache) }
     let(:arel_table) { double(:arel_table) }
 
+    let(:column) { Struct.new(:name, :sql_type, :primary) }
+
+    let(:columns) do
+      [primary_key, *changed_attributes].map { |e| column.new(e, type_map[e]) }
+    end
+
+    let(:type_map) do
+      {
+        id: 'integer',
+        foo: 'character varying(255)',
+        bar: 'boolean'
+      }.stringify_keys
+    end
+
     let(:primary_key) { 'id' }
     let(:timestamp) { Time.at(0).utc }
-    let(:changed_attributes) { Set.new(%w(id foo bar)) }
+    let(:changed_attributes) { [primary_key, *Set.new(%w(foo bar))] }
     let(:quoted_table_alias) { 'foos_2' }
     let(:column_names_for_sql) { '"id", "foo", "bar"' }
 
@@ -318,6 +332,10 @@ describe ActiveRecord::Base do
       ]
     end
 
+    let(:type_casts) do
+      '(NULL::integer, NULL::character varying(255), NULL::boolean)'
+    end
+
     before(:each) do
       quote = ->(value) { %("#{value}") }
 
@@ -330,9 +348,11 @@ describe ActiveRecord::Base do
       # schema_cache
       allow(schema_cache).to receive(:table_exists?).and_return(true)
       allow(schema_cache).to receive(:primary_keys).and_return(primary_key)
+      allow(schema_cache).to receive(:columns).and_return(columns)
 
       # subject
       allow(subject).to receive(:connection).and_return(connection)
+      allow(subject).to receive(:type_casts).and_return(type_casts)
       allow(subject).to receive(:changed_values).and_return(changed_values)
       allow(subject).to receive(:values_for_sql).and_return(values_for_sql)
 
@@ -358,7 +378,9 @@ describe ActiveRecord::Base do
         UPDATE "foos" SET
           "id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"
         FROM (
-          VALUES (1, 4, 5, '1970-01-01 00:00:00.000000'), (2, 2, 3, '1970-01-01 00:00:00.000000')
+          VALUES
+            (NULL::integer, NULL::character varying(255), NULL::boolean),
+            (1, 4, 5, '1970-01-01 00:00:00.000000'), (2, 2, 3, '1970-01-01 00:00:00.000000')
         )
         AS foos_2("id", "foo", "bar")
         WHERE "foos"."id" = foos_2."id"
@@ -411,6 +433,7 @@ describe ActiveRecord::Base do
       options = {
         table: subject.quoted_table_name,
         set_columns: changed_attributes_for_sql,
+        type_casts: type_casts,
         values: values_for_sql,
         alias: quoted_table_alias,
         columns: column_names_for_sql,
@@ -632,6 +655,92 @@ describe ActiveRecord::Base do
       it 'formats the attributes for SQL' do
         expected = %("foo" = #{table_alias}."foo", "bar" = #{table_alias}."bar")
         expect(changed_attributes_for_sql).to eq(expected)
+      end
+    end
+  end
+
+  describe 'type_casts' do
+    # rubocop:disable Style/ClassAndModuleChildren
+    class self::Foo < ActiveRecord::Base
+    end
+    # rubocop:enable Style/ClassAndModuleChildren
+
+    subject { Foo }
+
+    let(:primary_key) { 'id' }
+    let(:column_names) { Set.new(%w(foo bar)) }
+
+    let(:connection) { double(:connection) }
+    let(:schema_cache) { double(:schema_cache) }
+    let(:column) { Struct.new(:name, :sql_type, :primary) }
+
+    let(:columns) do
+      [primary_key, *column_names].map { |e| column.new(e, type_map[e]) }
+    end
+
+    let(:type_map) do
+      {
+        id: 'integer',
+        foo: 'character varying(255)',
+        bar: 'boolean'
+      }.stringify_keys
+    end
+
+    before(:each) do
+      stub_const('Foo', self.class::Foo)
+
+      allow(subject).to receive(:connection).and_return(connection)
+      allow(connection).to receive(:schema_cache).and_return(schema_cache)
+
+      allow(schema_cache).to receive(:columns).and_return(columns)
+      allow(schema_cache).to receive(:table_exists?).and_return(true)
+      allow(schema_cache).to receive(:primary_keys).and_return(primary_key)
+    end
+
+    def type_casts
+      subject.send(:type_casts, primary_key, column_names)
+    end
+
+    it 'returns the type casts' do
+      expected = '(NULL::integer, NULL::character varying(255), NULL::boolean)'
+      expect(type_casts).to eq(expected)
+    end
+
+    context 'when the primary key is nil' do
+      let(:primary_key) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No primary key given'
+        expect { type_casts }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the primary key is empty' do
+      let(:primary_key) { '' }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No primary key given'
+        expect { type_casts }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the given list of changed attributes is nil' do
+      let(:primary_key) { 'id' }
+      let(:column_names) { nil }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No column names given'
+        expect { type_casts }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    context 'when the given list of changed attributes is empty' do
+      let(:primary_key) { 'id' }
+      let(:column_names) { [] }
+
+      it 'raises a "No changed attributes given" error' do
+        message = 'No column names given'
+        expect { type_casts }.to raise_error(ArgumentError, message)
       end
     end
   end

@@ -4,7 +4,9 @@ module ActiveRecord
       UPDATE %{table} SET
         %{set_columns}
       FROM (
-        VALUES %{values}
+        VALUES
+          %{type_casts},
+          %{values}
       )
       AS %{alias}(%{columns})
       WHERE %{table}.%{primary_key} = %{alias}.%{primary_key}
@@ -132,12 +134,14 @@ module ActiveRecord
       #
       # @see #update_records
       # rubocop:disable Metrics/MethodLength
+      # rubocop:disable Metrics/AbcSize
       def sql_for_update_records(records, timestamp)
         attributes = changed_attributes(records)
         quoted_changed_attributes = changed_attributes_for_sql(
           attributes, quoted_table_alias
         )
 
+        casts = type_casts(primary_key, attributes)
         values = changed_values(records, primary_key, attributes, timestamp)
         quoted_values = values_for_sql(values)
         quoted_column_names = column_names_for_sql(primary_key, attributes)
@@ -146,12 +150,14 @@ module ActiveRecord
           UPDATE_RECORDS_SQL_TEMPLATE,
           table: quoted_table_name,
           set_columns: quoted_changed_attributes,
+          type_casts: casts,
           values: quoted_values,
           alias: quoted_table_alias,
           columns: quoted_column_names,
           primary_key: quoted_primary_key
         )
       end
+      # rubocop:enable Metrics/AbcSize
       # rubocop:enable Metrics/MethodLength
 
       # @return [Time] the current time in the ActiveRecord timezone.
@@ -212,6 +218,32 @@ module ActiveRecord
         changed_attributes
           .map { |e| connection.quote_column_name(e) }
           .map { |e| "#{e} = #{table_alias}.#{e}" }.join(', ')
+      end
+
+      # Returns a row used for typecasting the values that will be updated.
+      #
+      # This is needed because many types don't have a specific literal syntax
+      # and are instead using the string literal syntax. This will cause type
+      # mismatches because there's not context, which is otherwise present for
+      # regular inserts, for the values to infer the types from.
+      #
+      # @example
+      #   ActiveRecord::Base.send(:type_casts, 'id', %w(foo bar))
+      #   # => (NULL::integer, NULL::character varying(255), NULL::boolean)
+      #
+      # @param primary_key [String] the primary key of the table
+      # @param column_names [Set<String>] the name of the columns
+      #
+      # @raise [ArgumentError]
+      #   * If the given primary key is `nil` or empty
+      #   * If the given list of column names is `nil` or empty
+      def type_casts(primary_key, column_names)
+        raise ArgumentError, 'No primary key given' if primary_key.blank?
+        raise ArgumentError, 'No column names given' if column_names.blank?
+
+        attrs = ([primary_key] + column_names.to_a)
+        type_casts = attrs.map! { |n| 'NULL::' + columns_hash[n].sql_type }
+        '(' + type_casts.join(', ') + ')'
       end
 
       # Returns the values of the given records that have changed.
