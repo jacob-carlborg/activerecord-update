@@ -1,4 +1,4 @@
-# activerecord-update
+# activerecord-update [![Build Status](https://travis-ci.org/jacob-carlborg/activerecord-update.svg?branch=master)](https://travis-ci.org/jacob-carlborg/activerecord-update)
 
 activerecord-update is a library for doing batch updates using ActiveRecord.
 Currently it only supports PostgreSQL.
