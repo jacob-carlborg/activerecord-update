@@ -1,4 +1,5 @@
 require 'pry'
+require 'ruby-prof'
 require 'simplecov'
 
 SimpleCov.start do

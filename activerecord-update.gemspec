@@ -42,6 +42,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'redcarpet', '~> 3.3'
   spec.add_development_dependency 'rspec', '~> 3.5'
   spec.add_development_dependency 'rubocop', '0.46.0'
+  spec.add_development_dependency 'ruby-prof', '~> 0.16'
   spec.add_development_dependency 'simplecov', '~> 0.12'
   spec.add_development_dependency 'timecop', '~> 0.8'
   spec.add_development_dependency 'yard', '~> 0.9'
