@@ -307,7 +307,7 @@ describe ActiveRecord::Base do
 
     let(:primary_key) { 'id' }
     let(:timestamp) { Time.at(0).utc }
-    let(:changed_attributes) { [primary_key, *Set.new(%w(foo bar))] }
+    let(:changed_attributes) { [primary_key, 'foo', 'bar'] }
     let(:quoted_table_alias) { 'foos_2' }
     let(:column_names_for_sql) { '"id", "foo", "bar"' }
 
@@ -644,7 +644,7 @@ describe ActiveRecord::Base do
     end
 
     context 'when the changed attributes list is empty' do
-      let(:changed_attributes) { Set.new }
+      let(:changed_attributes) { [] }
 
       it 'raises an ArgumentError error' do
         expect { changed_attributes_for_sql }.to raise_error(ArgumentError)
@@ -652,7 +652,7 @@ describe ActiveRecord::Base do
     end
 
     context 'when the changed attributes list is non-empty' do
-      let(:changed_attributes) { Set.new(%w(foo bar)) }
+      let(:changed_attributes) { %w(foo bar) }
 
       it 'formats the attributes for SQL' do
         expected = %("foo" = #{table_alias}."foo", "bar" = #{table_alias}."bar")
@@ -670,7 +670,7 @@ describe ActiveRecord::Base do
     subject { Foo }
 
     let(:primary_key) { 'id' }
-    let(:column_names) { Set.new(%w(foo bar)) }
+    let(:column_names) { %w(foo bar) }
 
     let(:connection) { double(:connection) }
     let(:schema_cache) { double(:schema_cache) }
@@ -762,7 +762,7 @@ describe ActiveRecord::Base do
     # rubocop:enable Style/ClassAndModuleChildren
 
     let(:primary_key) { 'id' }
-    let(:changed_attributes) { Set.new(%w(foo bar)) }
+    let(:changed_attributes) { %w(foo bar) }
     let(:updated_at) { Time.at(0) }
     let(:connection) { double(:connection) }
 
@@ -802,7 +802,7 @@ describe ActiveRecord::Base do
     end
 
     context 'when only few attributes have changed' do
-      let(:changed_attributes) { Set.new(%w(bar)) }
+      let(:changed_attributes) { %w(bar) }
 
       it 'returns the values only for the changed attributes' do
         expected = [
@@ -937,7 +937,7 @@ describe ActiveRecord::Base do
 
   describe 'column_names_for_sql' do
     let(:primary_key) { 'id' }
-    let(:column_names) { Set.new(%w(foo bar)) }
+    let(:column_names) { %w(foo bar) }
     let(:connection) { double(:connection) }
 
     before(:each) do

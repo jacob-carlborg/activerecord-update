@@ -199,8 +199,8 @@ module ActiveRecord
       # @return [Set<String>] a list of the names of the attributes that have
       #   changed
       def changed_attributes(records)
-        changed = Set.new(records.flat_map(&:changed))
-        changed.empty? ? changed : changed << 'updated_at'
+        changed = records.flat_map(&:changed)
+        changed.empty? ? changed : changed.push('updated_at').tap(&:uniq!)
       end
 
       # Returns the given changed attributes formatted for SQL.
@@ -241,8 +241,10 @@ module ActiveRecord
         raise ArgumentError, 'No primary key given' if primary_key.blank?
         raise ArgumentError, 'No column names given' if column_names.blank?
 
-        attrs = ([primary_key] + column_names.to_a)
-        type_casts = attrs.map! { |n| 'NULL::' + columns_hash[n].sql_type }
+        type_casts = column_names.dup
+          .unshift(primary_key)
+          .map! { |n| 'NULL::' + columns_hash[n].sql_type }
+
         '(' + type_casts.join(', ') + ')'
       end
 
@@ -345,8 +347,9 @@ module ActiveRecord
         raise ArgumentError, 'No primary key given' if primary_key.blank?
         raise ArgumentError, 'No column names given' if column_names.blank?
 
-        sql_columns = (Set.new([primary_key]) + column_names).to_a
-        sql_columns.map! { |e| connection.quote_column_name(e) }.join(', ')
+        column_names.dup
+          .unshift(primary_key)
+          .map! { |e| connection.quote_column_name(e) }.join(', ')
       end
 
       # Performs the given query and returns the result of the query.
