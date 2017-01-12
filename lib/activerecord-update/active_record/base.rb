@@ -44,9 +44,37 @@ module ActiveRecord
       #   were updated and the records that failed to validate
       #
       # @see ActiveRecord::Update::Result
+      # @see .update_records!
       def update_records(records)
+        _update_records(records, raise_on_validation_failure: false)
+      end
+
+      # (see .update_records)
+      #
+      # The difference compared to {.update_records} is that this method will
+      # raise on validation failures. It will pick the first failing record and
+      # raise the error based that record's failing validations.
+      #
+      # If an error is raise none of the records will be updated, including the
+      # valid records.
+      #
+      # @raise [ActiveRecord::RecordInvalid] if any records failed to validate
+      # @see .update_records
+      def update_records!(records)
+        _update_records(records, raise_on_validation_failure: true)
+      end
+
+      private
+
+      # (see .update_records)
+      #
+      # @param raise_on_validation_failure [Boolean] if `true`, an error will be
+      #   raised for any validation failures
+      #
+      # @see .update_records
+      def _update_records(records, raise_on_validation_failure:)
         changed = changed_records(records)
-        valid, failed = validate_records(changed)
+        valid, failed = validate_records(changed, raise_on_validation_failure)
         return ActiveRecord::Update::Result.new(valid, failed) if valid.empty?
 
         timestamp = current_time
@@ -59,8 +87,6 @@ module ActiveRecord
         ActiveRecord::Update::Result.new(ids, failed)
       end
 
-      private
-
       # Returns the given records that are not new records and have changed.
       #
       # @param records [<ActiveRecord::Base>] the records to filter
@@ -72,12 +98,23 @@ module ActiveRecord
       # Validates the given records.
       #
       # @param records [<ActiveModel::Validations>] the records to validate
+      # @param raise_on_validation_failure [Boolean] if `true`, an error will be
+      #   raised for any validation failures
       #
       # @return [(<ActiveModel::Validations>, <ActiveModel::Validations>)]
       #   a tuple where the first element is an array of records that are valid.
       #   The second element is an array of the invalid records
-      def validate_records(records)
-        records.partition(&:valid?)
+      #
+      # @raise [ActiveRecord::RecordInvalid] if `raise_on_validation_failure`
+      #   is `true` and there are validation failures
+      def validate_records(records, raise_on_validation_failure)
+        valid, invalid = records.partition(&:valid?)
+
+        if raise_on_validation_failure && invalid.any?
+          raise RecordInvalid, invalid.first
+        end
+
+        [valid, invalid]
       end
 
       # Builds the SQL query used by the {#update_records} method.

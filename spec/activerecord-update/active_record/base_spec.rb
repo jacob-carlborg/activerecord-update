@@ -31,6 +31,28 @@ describe ActiveRecord::Base do
   describe 'update_records' do
     let(:records) { [double(:record)] }
 
+    it 'calls _update_records' do
+      expect(subject).to receive(:_update_records)
+        .with(records, raise_on_validation_failure: false)
+
+      subject.update_records(records)
+    end
+  end
+
+  describe 'update_records!' do
+    let(:records) { [double(:record)] }
+
+    it 'calls _update_records' do
+      expect(subject).to receive(:_update_records)
+        .with(records, raise_on_validation_failure: true)
+
+      subject.update_records!(records)
+    end
+  end
+
+  describe '_update_records' do
+    let(:records) { [double(:record)] }
+
     let(:changed_records) { [double(:changed_record)] }
     let(:valid) { [double(:valid)] }
     let(:failed_records) { [double(:failed_record)] }
@@ -39,6 +61,7 @@ describe ActiveRecord::Base do
     let(:ids) { [1, 2] }
     let(:query) { double(:query) }
     let(:connection) { double(:connection) }
+    let(:raise_on_validation_failure) { false }
 
     before(:each) do
       allow(subject).to receive(:changed_records).and_return(changed_records)
@@ -56,7 +79,10 @@ describe ActiveRecord::Base do
     end
 
     def update_records
-      subject.update_records(records)
+      subject.send(
+        :_update_records, records,
+        raise_on_validation_failure: raise_on_validation_failure
+      )
     end
 
     it 'calls "changed_records"' do
@@ -65,7 +91,9 @@ describe ActiveRecord::Base do
     end
 
     it 'calls "validate_records"' do
-      expect(subject).to receive(:validate_records).with(changed_records)
+      expect(subject).to receive(:validate_records)
+        .with(changed_records, raise_on_validation_failure)
+
       update_records
     end
 
@@ -208,10 +236,36 @@ describe ActiveRecord::Base do
   end
 
   describe 'validate_records' do
-    let(:model) { Struct.new(:valid?) }
+    let(:raise_on_validation_failure) { false }
+
+    let(:model) do
+      Struct.new(:valid?) do
+        include ActiveModel::Model
+
+        def initialize(valid)
+          self[:valid?] = valid
+        end
+
+        def self.i18n_scope
+          :activerecord
+        end
+      end
+    end
 
     def validate_records
-      subject.send(:validate_records, records)
+      subject.send(:validate_records, records, raise_on_validation_failure)
+    end
+
+    shared_examples 'raise on validation failure' do
+      context 'when "raise_on_validation_failure" is `true`' do
+        let(:records) { [model.new(false), model.new(false)] }
+        let(:raise_on_validation_failure) { true }
+
+        it 'raises an ActiveRecord::RecordInvalid error' do
+          expect { validate_records }
+            .to raise_error(ActiveRecord::RecordInvalid, 'Validation failed: ')
+        end
+      end
     end
 
     context 'when no records are valid' do
@@ -224,6 +278,8 @@ describe ActiveRecord::Base do
       it 'adds all the records to the second element of the returned tuple' do
         expect(validate_records.second).to match_array(records)
       end
+
+      include_examples 'raise on validation failure'
     end
 
     context 'when all records are valid' do
@@ -235,6 +291,14 @@ describe ActiveRecord::Base do
 
       it 'returns a tuple where the second element is an empty array' do
         expect(validate_records.second).to be_empty
+      end
+
+      context 'when "raise_on_validation_failure" is `true`' do
+        let(:raise_on_validation_failure) { true }
+
+        it 'does not raise any errors' do
+          expect { validate_records }.to_not raise_error
+        end
       end
     end
 
@@ -251,6 +315,8 @@ describe ActiveRecord::Base do
         'tuple' do
         expect(validate_records.second).to contain_exactly(invalid)
       end
+
+      include_examples 'raise on validation failure'
     end
   end
 
