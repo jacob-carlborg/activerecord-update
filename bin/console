@@ -1,7 +1,12 @@
 #!/usr/bin/env ruby
 
 require 'bundler/setup'
-require 'activerecord-update'
 require 'pry'
+require 'activerecord-update'
+require_relative '../spec/support/database'
+require_relative '../spec/models/record'
+
+ActiveRecord::Update.database.connect
+at_exit { ActiveRecord::Update.database.disconnect }
 
 Pry.start
