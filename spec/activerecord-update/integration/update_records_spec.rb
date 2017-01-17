@@ -67,5 +67,33 @@ describe 'integration' do
         expect(attrs).to eq(expected)
       end
     end
+
+    context 'when a records fails to updated to due being stale' do
+      before(:each) do
+        record1.foo = foo
+        record2.bar = bar + 1
+
+        # Update the database behind the back of ActiveRecord to simulate a
+        # different process updating the database causing a stale object error
+        ActiveRecord::Base.connection.exec_query('UPDATE records SET '\
+          "lock_version = #{record1.lock_version + 1} WHERE id = #{record1.id}")
+      end
+
+      it 'raises an ActiveRecord::StaleObjectError error' do
+        error = ActiveRecord::StaleObjectError
+        expect { Record.update_records!(records) }.to raise_error(error)
+      end
+
+      it 'does not update the stale records', :aggregate_failures do
+        expected = [Record.new(bar: bar), Record.new(bar: bar + 1)]
+          .map { |e| e.slice(:foo, :bar) }
+
+        error = ActiveRecord::StaleObjectError
+        expect { Record.update_records!(records) }.to raise_error(error)
+
+        attrs = records.map { |e| e.reload.slice(:foo, :bar) }
+        expect(attrs).to eq(expected)
+      end
+    end
   end
 end

@@ -32,8 +32,11 @@ describe ActiveRecord::Base do
     let(:records) { [double(:record)] }
 
     it 'calls _update_records' do
-      expect(subject).to receive(:_update_records)
-        .with(records, raise_on_validation_failure: false)
+      expect(subject).to receive(:_update_records).with(
+        records,
+        raise_on_validation_failure: false,
+        raise_on_stale_objects: false
+      )
 
       subject.update_records(records)
     end
@@ -43,8 +46,11 @@ describe ActiveRecord::Base do
     let(:records) { [double(:record)] }
 
     it 'calls _update_records' do
-      expect(subject).to receive(:_update_records)
-        .with(records, raise_on_validation_failure: true)
+      expect(subject).to receive(:_update_records).with(
+        records,
+        raise_on_validation_failure: true,
+        raise_on_stale_objects: true
+      )
 
       subject.update_records!(records)
     end
@@ -54,20 +60,27 @@ describe ActiveRecord::Base do
     let(:records) { [double(:record)] }
 
     let(:changed_records) { [double(:changed_record)] }
-    let(:valid) { [double(:valid)] }
+    let(:valid) { [1, 2] }
     let(:failed_records) { [double(:failed_record)] }
     let(:current_time) { double(:current_time) }
     let(:primary_key) { 'id' }
-    let(:ids) { [1, 2] }
+    let(:ids) { valid }
     let(:query) { double(:query) }
     let(:connection) { double(:connection) }
     let(:raise_on_validation_failure) { false }
+    let(:raise_on_stale_objects) { false }
+    let(:stale_objects) { [] }
+
+    let(:result) do
+      ActiveRecord::Update::Result.new(valid, failed_records, stale_objects)
+    end
 
     before(:each) do
       allow(subject).to receive(:changed_records).and_return(changed_records)
       allow(subject).to receive(:current_time).and_return(current_time)
       allow(subject).to receive(:quoted_table_alias).and_return('"foos"')
       allow(subject).to receive(:primary_key).and_return(primary_key)
+      allow(subject).to receive(:build_result).and_return(result)
       allow(subject).to receive(:perform_update_records_query).and_return(ids)
       allow(subject).to receive(:sql_for_update_records).and_return(query)
       allow(subject).to receive(:update_timestamp)
@@ -81,7 +94,8 @@ describe ActiveRecord::Base do
     def update_records
       subject.send(
         :_update_records, records,
-        raise_on_validation_failure: raise_on_validation_failure
+        raise_on_validation_failure: raise_on_validation_failure,
+        raise_on_stale_objects: raise_on_stale_objects
       )
     end
 
@@ -112,6 +126,18 @@ describe ActiveRecord::Base do
     it 'calls "perform_update_records_query"' do
       expect(subject).to receive(:perform_update_records_query)
         .with(query, primary_key)
+
+      update_records
+    end
+
+    it 'calls "build_result"' do
+      expect(subject).to receive(:build_result).with(valid, failed_records, ids)
+      update_records
+    end
+
+    it 'calls "validate_result"' do
+      expect(subject).to receive(:validate_result)
+        .with(result, raise_on_stale_objects)
 
       update_records
     end
@@ -359,23 +385,26 @@ describe ActiveRecord::Base do
 
     let(:column) { Struct.new(:name, :sql_type, :primary) }
 
-    let(:columns) do
-      [primary_key, *changed_attributes].map { |e| column.new(e, type_map[e]) }
+    let(:columns_hash) do
+      Hash[all_attributes.map { |e| [e, column.new(e, type_map[e])] }]
     end
 
     let(:type_map) do
       {
         id: 'integer',
         foo: 'character varying(255)',
-        bar: 'boolean'
+        bar: 'boolean',
+        updated_at: 'timestamp without time zone'
       }.stringify_keys
     end
 
     let(:primary_key) { 'id' }
     let(:timestamp) { Time.at(0).utc }
-    let(:changed_attributes) { [primary_key, 'foo', 'bar'] }
+    let(:changed_attributes) { %w(foo bar updated_at) }
+    let(:all_attributes) { [primary_key] + changed_attributes }
     let(:quoted_table_alias) { 'foos_2' }
-    let(:column_names_for_sql) { '"id", "foo", "bar"' }
+    let(:column_names_for_sql) { '"id", "foo", "bar", "updated_at"' }
+    let(:sql_template) { 'sql template' }
 
     let(:values_for_sql) do
       "(1, 4, 5, '1970-01-01 00:00:00.000000'), " \
@@ -383,7 +412,8 @@ describe ActiveRecord::Base do
     end
 
     let(:changed_attributes_for_sql) do
-      '"id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"'
+      '"foo" = "foos_2"."foo", "bar" = "foos_2"."bar", ' \
+        '"updated_at" = "records_2"."updated_at"'
     end
 
     let(:records) do
@@ -401,7 +431,50 @@ describe ActiveRecord::Base do
     end
 
     let(:type_casts) do
-      '(NULL::integer, NULL::character varying(255), NULL::boolean)'
+      '(NULL::integer, NULL::character varying(255), NULL::boolean, ' \
+        'NULL::timestamp without time zone)'
+    end
+
+    let(:query) do
+      <<-SQL.strip_heredoc.strip
+        UPDATE "foos" SET
+          #{changed_attributes_for_sql}
+        FROM (
+          VALUES
+            #{type_casts},
+            #{values_for_sql}
+        )
+        AS foos_2(#{column_names_for_sql})
+        WHERE "foos"."id" = foos_2."id"
+        RETURNING "foos"."id"
+      SQL
+    end
+
+    let(:sql_template) do
+      <<-SQL.strip_heredoc.strip.freeze
+        UPDATE %{table} SET
+          %{set_columns}
+        FROM (
+          VALUES
+            %{type_casts},
+            %{values}
+        )
+        AS %{alias}(%{columns})
+        WHERE %{table}.%{primary_key} = %{alias}.%{primary_key}
+        RETURNING %{table}.%{primary_key}
+      SQL
+    end
+
+    let(:format_options) do
+      {
+        table: subject.quoted_table_name,
+        set_columns: changed_attributes_for_sql,
+        type_casts: type_casts,
+        values: values_for_sql,
+        alias: quoted_table_alias,
+        columns: column_names_for_sql,
+        primary_key: subject.quoted_primary_key
+      }
     end
 
     before(:each) do
@@ -416,9 +489,10 @@ describe ActiveRecord::Base do
       # schema_cache
       allow(schema_cache).to receive(:table_exists?).and_return(true)
       allow(schema_cache).to receive(:primary_keys).and_return(primary_key)
-      allow(schema_cache).to receive(:columns).and_return(columns)
 
       # subject
+      allow(subject).to receive(:columns_hash).and_return(columns_hash)
+
       allow(subject).to receive(:connection).and_return(connection)
       allow(subject).to receive(:type_casts).and_return(type_casts)
       allow(subject).to receive(:changed_values).and_return(changed_values)
@@ -426,6 +500,8 @@ describe ActiveRecord::Base do
 
       allow(subject).to receive(:changed_attributes)
         .and_return(changed_attributes)
+
+      allow(subject).to receive(:all_attributes).and_return(all_attributes)
 
       allow(subject).to receive(:quoted_table_alias)
         .and_return(quoted_table_alias)
@@ -435,6 +511,11 @@ describe ActiveRecord::Base do
 
       allow(subject).to receive(:column_names_for_sql)
         .and_return(column_names_for_sql)
+
+      allow(subject).to receive(:build_sql_template).and_return(sql_template)
+
+      allow(subject).to receive(:build_format_options)
+        .and_return(format_options)
     end
 
     def sql_for_update_records
@@ -442,20 +523,7 @@ describe ActiveRecord::Base do
     end
 
     it 'returns the SQL used for the "update_records" method' do
-      expected = <<-SQL.strip_heredoc.strip
-        UPDATE "foos" SET
-          "id" = "foos_2"."id", "foo" = "foos_2"."foo", "bar" = "foos_2"."bar"
-        FROM (
-          VALUES
-            (NULL::integer, NULL::character varying(255), NULL::boolean),
-            (1, 4, 5, '1970-01-01 00:00:00.000000'), (2, 2, 3, '1970-01-01 00:00:00.000000')
-        )
-        AS foos_2("id", "foo", "bar")
-        WHERE "foos"."id" = foos_2."id"
-        RETURNING "foos"."id"
-      SQL
-
-      expect(sql_for_update_records).to eq(expected)
+      expect(sql_for_update_records).to eq(query)
     end
 
     it 'calls "changed_attributes" with the given records' do
@@ -470,6 +538,11 @@ describe ActiveRecord::Base do
       sql_for_update_records
     end
 
+    it 'calls "all_attributes"' do
+      expect(subject).to receive(:all_attributes).with(changed_attributes)
+      sql_for_update_records
+    end
+
     it 'calls "quoted_table_alias"' do
       expect(subject).to receive(:quoted_table_alias)
       sql_for_update_records
@@ -477,7 +550,7 @@ describe ActiveRecord::Base do
 
     it 'calls "changed_values" with the records and the changed attributes' do
       expect(subject).to receive(:changed_values)
-        .with(records, primary_key, changed_attributes, timestamp)
+        .with(records, all_attributes, timestamp)
 
       sql_for_update_records
     end
@@ -490,25 +563,25 @@ describe ActiveRecord::Base do
     it 'calls "column_names_for_sql" with the primary key and changed '\
       'attributes' do
       expect(subject).to receive(:column_names_for_sql)
-        .with(primary_key, changed_attributes)
+        .with(all_attributes)
+
+      sql_for_update_records
+    end
+
+    it 'calls "build_sql_template"' do
+      expect(subject).to receive(:build_sql_template).with(no_args)
+      sql_for_update_records
+    end
+
+    it 'calls "build_format_options"' do
+      expect(subject).to receive(:build_format_options).with(format_options)
+        .and_return(format_options)
 
       sql_for_update_records
     end
 
     it 'calls "format"' do
-      sql = subject.const_get('UPDATE_RECORDS_SQL_TEMPLATE')
-
-      options = {
-        table: subject.quoted_table_name,
-        set_columns: changed_attributes_for_sql,
-        type_casts: type_casts,
-        values: values_for_sql,
-        alias: quoted_table_alias,
-        columns: column_names_for_sql,
-        primary_key: subject.quoted_primary_key
-      }
-
-      expect(subject).to receive(:format).with(sql, options)
+      expect(subject).to receive(:format).with(sql_template, format_options)
       sql_for_update_records
     end
   end
@@ -627,6 +700,14 @@ describe ActiveRecord::Base do
     end
     # rubocop:enable Style/ClassAndModuleChildren
 
+    let(:locking_enabled) { false }
+    let(:locking_column) { 'lock_version' }
+
+    before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+      allow(subject).to receive(:locking_column).and_return(locking_column)
+    end
+
     def changed_attributes
       subject.send(:changed_attributes, records)
     end
@@ -656,6 +737,19 @@ describe ActiveRecord::Base do
 
       it 'includes the "updated_at" attribute in the returned list' do
         expect(changed_attributes).to include('updated_at')
+      end
+
+      context 'when locking is enabled' do
+        let(:locking_enabled) { true }
+
+        it 'returns a list containing the name of the changed attribute' do
+          expected = %w(foo updated_at) + [locking_column]
+          expect(changed_attributes).to match_array(expected)
+        end
+
+        it 'includes the locking column attribute in the returned list' do
+          expect(changed_attributes).to include(locking_column)
+        end
       end
     end
 
@@ -727,6 +821,24 @@ describe ActiveRecord::Base do
     end
   end
 
+  describe 'all_attributes' do
+    let(:attributes) { %w(foo bar) }
+    let(:primary_key) { 'id' }
+
+    before(:each) do
+      allow(subject).to receive(:primary_key).and_return(primary_key)
+    end
+
+    def all_attributes
+      subject.send(:all_attributes, attributes)
+    end
+
+    it 'returns all attributes, including the primary key' do
+      expected = [primary_key] + attributes
+      expect(all_attributes).to eq(expected)
+    end
+  end
+
   describe 'type_casts' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Foo < ActiveRecord::Base
@@ -736,59 +848,66 @@ describe ActiveRecord::Base do
     subject { Foo }
 
     let(:primary_key) { 'id' }
-    let(:column_names) { %w(foo bar) }
+    let(:column_names) { [primary_key] + %w(foo bar updated_at) }
 
     let(:connection) { double(:connection) }
     let(:schema_cache) { double(:schema_cache) }
     let(:column) { Struct.new(:name, :sql_type, :primary) }
+    let(:locking_enabled) { false }
+    let(:locking_column) { 'lock_version' }
 
-    let(:columns) do
-      [primary_key, *column_names].map { |e| column.new(e, type_map[e]) }
+    let(:columns_hash) do
+      Hash[[*column_names].map { |e| [e, column.new(e, type_map[e])] }]
     end
 
     let(:type_map) do
       {
         id: 'integer',
         foo: 'character varying(255)',
-        bar: 'boolean'
+        bar: 'boolean',
+        updated_at: 'timestamp without time zone',
+        locking_column => 'integer'
       }.stringify_keys
     end
 
     before(:each) do
       stub_const('Foo', self.class::Foo)
 
-      allow(subject).to receive(:connection).and_return(connection)
-      allow(connection).to receive(:schema_cache).and_return(schema_cache)
-
-      allow(schema_cache).to receive(:columns).and_return(columns)
-      allow(schema_cache).to receive(:table_exists?).and_return(true)
-      allow(schema_cache).to receive(:primary_keys).and_return(primary_key)
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+      allow(subject).to receive(:locking_column).and_return(locking_column)
+      allow(subject).to receive(:columns_hash).and_return(columns_hash)
     end
 
     def type_casts
-      subject.send(:type_casts, primary_key, column_names)
+      subject.send(:type_casts, column_names)
     end
 
     it 'returns the type casts' do
-      expected = '(NULL::integer, NULL::character varying(255), NULL::boolean)'
+      expected = '(' \
+        'NULL::integer, '\
+        'NULL::character varying(255), ' \
+        'NULL::boolean, ' \
+        'NULL::timestamp without time zone' \
+      ')'
+
       expect(type_casts).to eq(expected)
     end
 
-    context 'when the primary key is nil' do
-      let(:primary_key) { nil }
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
+      let(:column_names) { super().dup << locking_column }
 
-      it 'raises a "No changed attributes given" error' do
-        message = 'No primary key given'
-        expect { type_casts }.to raise_error(ArgumentError, message)
-      end
-    end
+      it 'raises the type casts, including the prev locking column' do
+        expected = '(' \
+          'NULL::integer, '\
+          'NULL::integer, ' \
+          'NULL::character varying(255), ' \
+          'NULL::boolean, ' \
+          'NULL::timestamp without time zone, ' \
+          'NULL::integer' \
+        ')'
 
-    context 'when the primary key is empty' do
-      let(:primary_key) { '' }
-
-      it 'raises a "No changed attributes given" error' do
-        message = 'No primary key given'
-        expect { type_casts }.to raise_error(ArgumentError, message)
+        expect(type_casts).to eq(expected)
       end
     end
 
@@ -827,10 +946,10 @@ describe ActiveRecord::Base do
     end
     # rubocop:enable Style/ClassAndModuleChildren
 
-    let(:primary_key) { 'id' }
-    let(:changed_attributes) { %w(foo bar) }
+    let(:changed_attributes) { %w(id foo bar updated_at) }
     let(:updated_at) { Time.at(0) }
     let(:connection) { double(:connection) }
+    let(:locking_enabled) { false }
 
     let(:records) do
       [
@@ -840,13 +959,14 @@ describe ActiveRecord::Base do
     end
 
     before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
       allow(subject).to receive(:connection).and_return(connection)
       allow(connection).to receive(:quote) { |v| v }
     end
 
     def changed_values
       subject.send(
-        :changed_values, records, primary_key, changed_attributes, updated_at
+        :changed_values, records, changed_attributes, updated_at
       )
     end
 
@@ -868,7 +988,7 @@ describe ActiveRecord::Base do
     end
 
     context 'when only few attributes have changed' do
-      let(:changed_attributes) { %w(bar) }
+      let(:changed_attributes) { %w(id bar updated_at) }
 
       it 'returns the values only for the changed attributes' do
         expected = [
@@ -916,21 +1036,74 @@ describe ActiveRecord::Base do
       end
     end
 
-    context 'when the primary key is nil' do
-      let(:primary_key) { nil }
+    context 'when locking is enabled' do
+      # rubocop:disable Style/ClassAndModuleChildren
+      class self::Model < superclass::Model
+        attr_accessor :lock_version
 
-      it 'raises a "No changed attributes given" error' do
-        error_message = 'No primary key given'
-        expect { changed_values }.to raise_error(ArgumentError, error_message)
+        def slice(*keys)
+          super.merge(lock_version: lock_version)
+        end
+      end
+      # rubocop:enable Style/ClassAndModuleChildren
+
+      let(:locking_enabled) { true }
+      let(:lock_value) { 1 }
+      let(:changed_attributes) { %w(id foo bar updated_at lock_version) }
+
+      let(:records) do
+        [
+          Model.new(id: 1, foo: 3, bar: 4, lock_version: lock_value),
+          Model.new(id: 2, foo: 5, bar: 6, lock_version: lock_value + 1)
+        ]
+      end
+
+      it 'includes the previous and new value of the locking column' do
+        expected = [
+          [1, lock_value, 3, 4, lock_value + 1, updated_at],
+          [2, lock_value + 1, 5, 6, lock_value + 2, updated_at]
+        ]
+
+        expect(changed_values).to eq(expected)
+      end
+    end
+  end
+
+  describe 'increment_lock' do
+    let(:lock_value) { 1 }
+    let!(:record) { Struct.new(locking_column).new(lock_value) }
+    let(:locking_column) { :lock_version }
+
+    before(:each) do
+      allow(subject).to receive(:locking_column).and_return(locking_column.to_s)
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+    end
+
+    def increment_lock
+      subject.send(:increment_lock, record)
+    end
+
+    context 'when locking is disabled' do
+      let(:locking_enabled) { false }
+
+      it 'does not changed the lock value' do
+        expect { increment_lock }.to_not change(record, locking_column)
+      end
+
+      it 'returns nil' do
+        expect(increment_lock).to be_nil
       end
     end
 
-    context 'when the primary key is empty' do
-      let(:primary_key) { '' }
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
 
-      it 'raises a "No changed attributes given" error' do
-        error_message = 'No primary key given'
-        expect { changed_values }.to raise_error(ArgumentError, error_message)
+      it 'does not changed the lock value' do
+        expect { increment_lock }.to change(record, locking_column).by(1)
+      end
+
+      it 'returns the previous lock value' do
+        expect(increment_lock).to eq(lock_value)
       end
     end
   end
@@ -1002,38 +1175,39 @@ describe ActiveRecord::Base do
   end
 
   describe 'column_names_for_sql' do
-    let(:primary_key) { 'id' }
-    let(:column_names) { %w(foo bar) }
+    let(:column_names) { %w(id foo bar updated_at) }
     let(:connection) { double(:connection) }
+    let(:locking_enabled) { false }
+    let(:locking_column) { 'lock_version' }
+    let(:prev_locking_column) { 'prev_lock_version' }
 
     before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+      allow(subject).to receive(:locking_column).and_return(locking_column)
+      allow(subject).to receive(:prev_locking_column)
+        .and_return(prev_locking_column)
+
       allow(subject).to receive(:connection).and_return(connection)
       allow(connection).to receive(:quote_column_name) { |v| %("#{v}") }
     end
 
     def column_names_for_sql
-      subject.send(:column_names_for_sql, primary_key, column_names)
+      subject.send(:column_names_for_sql, column_names)
     end
 
     it 'returns the column names formatted for SQL' do
-      expect(column_names_for_sql).to eq('"id", "foo", "bar"')
+      expect(column_names_for_sql).to eq('"id", "foo", "bar", "updated_at"')
     end
 
-    context 'when the primary key is nil' do
-      let(:primary_key) { nil }
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
+      let(:column_names) { super() << locking_column }
 
-      it 'raises a "No changed attributes given" error' do
-        message = 'No primary key given'
-        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
-      end
-    end
+      it 'returns the column names including the prev locking column' do
+        expected = %("id", "#{prev_locking_column}", "foo", "bar", ) +
+                   %("updated_at", "#{locking_column}")
 
-    context 'when the primary key is empty' do
-      let(:primary_key) { '' }
-
-      it 'raises a "No changed attributes given" error' do
-        message = 'No primary key given'
-        expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+        expect(column_names_for_sql).to eq(expected)
       end
     end
 
@@ -1052,6 +1226,87 @@ describe ActiveRecord::Base do
       it 'raises a "No changed attributes given" error' do
         message = 'No column names given'
         expect { column_names_for_sql }.to raise_error(ArgumentError, message)
+      end
+    end
+  end
+
+  describe 'build_sql_template' do
+    let(:locking_enabled) { false }
+
+    before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+    end
+
+    def build_sql_template
+      subject.send(:build_sql_template)
+    end
+
+    it 'returns the SQL template' do
+      sql1 = ActiveRecord::Base.const_get(:UPDATE_RECORDS_SQL_TEMPLATE)
+      sql2 = ActiveRecord::Base.const_get(:UPDATE_RECORDS_SQL_FOOTER)
+
+      expect(build_sql_template).to eq(sql1 + "\n" + sql2)
+    end
+
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
+
+      it 'returns the template with the locking condition included' do
+        const = :UPDATE_RECORDS_SQL_LOCKING_CONDITION
+        sql = ActiveRecord::Base.const_get(const)
+        expect(build_sql_template).to include(sql)
+      end
+    end
+
+    context 'when locking is disabled' do
+      let(:locking_enabled) { false }
+
+      it 'returns the template without the locking condition' do
+        const = :UPDATE_RECORDS_SQL_LOCKING_CONDITION
+        sql = ActiveRecord::Base.const_get(const)
+        expect(build_sql_template).to_not include(sql)
+      end
+    end
+  end
+
+  describe 'build_format_options' do
+    let(:options) { { foo: 'a', bar: 'b' } }
+    let(:connection) { double(:connection) }
+    let(:locking_column) { 'c' }
+    let(:prev_locking_column) { 'prev_' + locking_column }
+
+    before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+      allow(subject).to receive(:connection).and_return(connection)
+
+      allow(subject).to receive(:locking_column).and_return(locking_column)
+      allow(subject).to receive(:prev_locking_column)
+        .and_return(prev_locking_column)
+
+      allow(connection).to receive(:quote_column_name) { |name| %("#{name}") }
+    end
+
+    def build_format_options
+      subject.send(:build_format_options, options)
+    end
+
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
+
+      it 'adds the locking column to the given options' do
+        expected = options.merge(
+          locking_column: %("#{locking_column}"),
+          prev_locking_column: %("#{prev_locking_column}")
+        )
+        expect(build_format_options).to eq(expected)
+      end
+    end
+
+    context 'when locking is disabled' do
+      let(:locking_enabled) { false }
+
+      it 'adds the locking column to the given options' do
+        expect(build_format_options).to eq(options)
       end
     end
   end
@@ -1110,6 +1365,135 @@ describe ActiveRecord::Base do
 
     it 'returns the primary keys of the records that were updated' do
       expect(perform_update_records_query).to eq([1, 2])
+    end
+  end
+
+  describe 'validate_result' do
+    let(:result) { ActiveRecord::Update::Result.new([], [], stale_objects) }
+    let(:raise_on_stale_objects) { false }
+
+    def validate_result
+      subject.send(:validate_result, result, raise_on_stale_objects)
+    end
+
+    context 'when there are no stale objects' do
+      let(:stale_objects) { [] }
+
+      it 'does not raise any errors' do
+        expect { validate_result }.to_not raise_error
+      end
+    end
+
+    context 'when there are stale objects' do
+      let(:stale_object1) { double(:stale_object) }
+      let(:stale_object2) { double(:stale_object) }
+      let(:stale_objects) { [stale_object1, stale_object2] }
+
+      it 'does not raise any errors' do
+        expect { validate_result }.to_not raise_error
+      end
+
+      context 'when raise_on_stale_objects is `true`' do
+        let(:raise_on_stale_objects) { true }
+
+        it 'raises an ActiveRecord::StaleObjectError error' do
+          error = ActiveRecord::StaleObjectError
+          expect { validate_result }.to raise_error(error)
+        end
+
+        it 'uses the first stale object to create the error' do
+          begin
+            validate_result
+          rescue ActiveRecord::StaleObjectError => e
+            expect(e.record).to eq(stale_object1)
+          else
+            # if this fails it means that the above call to `validate_result`
+            # didn't raise an StaleObjectError error
+            expect(false).to eq(true)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'build_result' do
+    let(:valid) { [double(:valid)] }
+    let(:failed) { [double(:failed)] }
+    let(:primary_keys) { [double(:primary_key)] }
+    let(:stale_objects) { [double(:stale_objects)] }
+
+    before(:each) do
+      allow(subject).to receive(:extract_stale_objects)
+        .and_return(stale_objects)
+    end
+
+    def build_result
+      subject.send(:build_result, valid, failed, primary_keys)
+    end
+
+    def extract_fields(result)
+      [result.ids, result.failed_records, result.stale_objects]
+    end
+
+    it 'returns the result' do
+      expected = ActiveRecord::Update::Result.new(
+        primary_keys, failed, stale_objects
+      )
+      expected = extract_fields(expected)
+
+      actual = extract_fields(build_result)
+      expect(actual).to eq(expected)
+    end
+
+    it 'calls "extract_stale_objects"' do
+      expect(subject).to receive(:extract_stale_objects)
+        .with(valid, primary_keys)
+
+      build_result
+    end
+  end
+
+  describe 'extract_stale_objects' do
+    let(:locking_enabled) { false }
+    let(:model) { Struct.new(:id) }
+
+    def extract_stale_objects
+      subject.send(:extract_stale_objects, records, primary_keys)
+    end
+
+    before(:each) do
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+      allow(subject).to receive(:primary_key).and_return('id')
+    end
+
+    context 'when the given records do not contain stale objects' do
+      let(:primary_keys) { [1, 2] }
+      let(:records) { primary_keys.map { |e| model.new(e) } }
+
+      it 'returns an empty list' do
+        expect(extract_stale_objects).to be_empty
+      end
+    end
+
+    context 'when the given records contain stale objects' do
+      let(:primary_keys) { [1] }
+      let(:records) { Array.new(2) { |e| model.new(e) } }
+
+      context 'when locking is enabled' do
+        let(:locking_enabled) { true }
+
+        it 'returns non-empty list' do
+          expect(extract_stale_objects).to_not be_empty
+        end
+      end
+
+      context 'when locking is disabled' do
+        let(:locking_enabled) { false }
+
+        it 'returns an empty list' do
+          expect(extract_stale_objects).to be_empty
+        end
+      end
     end
   end
 

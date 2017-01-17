@@ -10,10 +10,21 @@ module ActiveRecord
       )
       AS %{alias}(%{columns})
       WHERE %{table}.%{primary_key} = %{alias}.%{primary_key}
-      RETURNING %{table}.%{primary_key}
     SQL
 
     private_constant :UPDATE_RECORDS_SQL_TEMPLATE
+
+    UPDATE_RECORDS_SQL_LOCKING_CONDITION = <<-SQL.strip_heredoc.strip.freeze
+      AND %{table}.%{locking_column} = %{alias}.%{prev_locking_column}
+    SQL
+
+    private_constant :UPDATE_RECORDS_SQL_LOCKING_CONDITION
+
+    UPDATE_RECORDS_SQL_FOOTER = <<-SQL.strip_heredoc.strip.freeze
+      RETURNING %{table}.%{primary_key}
+    SQL
+
+    private_constant :UPDATE_RECORDS_SQL_FOOTER
 
     class << self
       # Updates a list of records in a single batch.
@@ -35,6 +46,8 @@ module ActiveRecord
       # * All the given records should be of the same type and the same type
       #   as the class this method is called on
       #
+      # * If the model is using optimistic locking, that is honored
+      #
       # @example
       #   Model.update_records(array_of_models)
       #
@@ -46,7 +59,11 @@ module ActiveRecord
       # @see ActiveRecord::Update::Result
       # @see .update_records!
       def update_records(records)
-        _update_records(records, raise_on_validation_failure: false)
+        _update_records(
+          records,
+          raise_on_validation_failure: false,
+          raise_on_stale_objects: false
+        )
       end
 
       # (see .update_records)
@@ -55,37 +72,63 @@ module ActiveRecord
       # raise on validation failures. It will pick the first failing record and
       # raise the error based that record's failing validations.
       #
-      # If an error is raise none of the records will be updated, including the
-      # valid records.
+      # If an `ActiveRecord::RecordInvalid` error is raised none of the records
+      # will be updated, including the valid records.
+      #
+      # If an `ActiveRecord::StaleObjectError` error is raised, some of the
+      # records might have been updated and is reflected in the
+      # {ActiveRecord::Update::Result#ids} and
+      # {ActiveRecord::Update::Result#stale_objects} attributes on the return
+      # value.
       #
       # @raise [ActiveRecord::RecordInvalid] if any records failed to validate
+      #
+      # @raise [ActiveRecord::StaleObjectError] if optimistic locking is enabled
+      #   and there were stale objects
+      #
       # @see .update_records
       def update_records!(records)
-        _update_records(records, raise_on_validation_failure: true)
+        _update_records(
+          records,
+          raise_on_validation_failure: true,
+          raise_on_stale_objects: true
+        )
       end
 
       private
+
+      # rubocop:disable Metrics/MethodLength
 
       # (see .update_records)
       #
       # @param raise_on_validation_failure [Boolean] if `true`, an error will be
       #   raised for any validation failures
       #
+      # @param raise_on_stale_objects [Boolean] if `true`, an error will be
+      #   raised if optimistic locking is used and there are stale objects
+      #
       # @see .update_records
-      def _update_records(records, raise_on_validation_failure:)
+      def _update_records(
+          records,
+          raise_on_validation_failure:,
+          raise_on_stale_objects:
+      )
+
         changed = changed_records(records)
         valid, failed = validate_records(changed, raise_on_validation_failure)
-        return ActiveRecord::Update::Result.new(valid, failed) if valid.empty?
+        return build_result(valid, failed, []) if valid.empty?
 
         timestamp = current_time
         query = sql_for_update_records(valid, timestamp)
         ids = perform_update_records_query(query, primary_key)
+        result = build_result(valid, failed, ids)
+        validate_result(result, raise_on_stale_objects)
 
         update_timestamp(valid, timestamp)
         mark_changes_applied(valid)
-
-        ActiveRecord::Update::Result.new(ids, failed)
+        result
       end
+      # rubocop:enable Metrics/MethodLength
 
       # Returns the given records that are not new records and have changed.
       #
@@ -178,13 +221,14 @@ module ActiveRecord
           attributes, quoted_table_alias
         )
 
-        casts = type_casts(primary_key, attributes)
-        values = changed_values(records, primary_key, attributes, timestamp)
+        attributes = all_attributes(attributes)
+        casts = type_casts(attributes)
+        values = changed_values(records, attributes, timestamp)
         quoted_values = values_for_sql(values)
-        quoted_column_names = column_names_for_sql(primary_key, attributes)
+        quoted_column_names = column_names_for_sql(attributes)
+        template = build_sql_template
 
-        format(
-          UPDATE_RECORDS_SQL_TEMPLATE,
+        options = build_format_options(
           table: quoted_table_name,
           set_columns: quoted_changed_attributes,
           type_casts: casts,
@@ -193,6 +237,8 @@ module ActiveRecord
           columns: quoted_column_names,
           primary_key: quoted_primary_key
         )
+
+        format(template, options)
       end
       # rubocop:enable Metrics/AbcSize
       # rubocop:enable Metrics/MethodLength
@@ -230,6 +276,9 @@ module ActiveRecord
 
       # Returns the changed attribute names of the given records.
       #
+      # When locking is enabled the locking column will be inserted as well in
+      # the return value.
+      #
       # @param records [<ActiveModel::Dirty>] the records to return the changed
       #   attributes for
       #
@@ -237,7 +286,11 @@ module ActiveRecord
       #   changed
       def changed_attributes(records)
         changed = records.flat_map(&:changed)
-        changed.empty? ? changed : changed.push('updated_at').tap(&:uniq!)
+        return changed if changed.empty?
+
+        attrs = changed.dup << 'updated_at'
+        attrs << locking_column if locking_enabled?
+        attrs.tap(&:uniq!)
       end
 
       # Returns the given changed attributes formatted for SQL.
@@ -257,6 +310,12 @@ module ActiveRecord
           .map { |e| "#{e} = #{table_alias}.#{e}" }.join(', ')
       end
 
+      # @return [<String>] all attributes, that is, the given attributes plus
+      #   some extra, like the primary key.
+      def all_attributes(attributes)
+        [primary_key] + attributes
+      end
+
       # Returns a row used for typecasting the values that will be updated.
       #
       # This is needed because many types don't have a specific literal syntax
@@ -264,26 +323,36 @@ module ActiveRecord
       # mismatches because there's not context, which is otherwise present for
       # regular inserts, for the values to infer the types from.
       #
+      # When locking is enabled a virtual prev locking column is inserted,
+      # called `'prev_' + locking_column`, at the second position, after the
+      # primary key. This column is used in the where condition to implement
+      # the optimistic locking feature.
+      #
       # @example
-      #   ActiveRecord::Base.send(:type_casts, 'id', %w(foo bar))
+      #   ActiveRecord::Base.send(:type_casts, %w(id foo bar))
       #   # => (NULL::integer, NULL::character varying(255), NULL::boolean)
       #
-      # @param primary_key [String] the primary key of the table
       # @param column_names [Set<String>] the name of the columns
       #
       # @raise [ArgumentError]
-      #   * If the given primary key is `nil` or empty
       #   * If the given list of column names is `nil` or empty
-      def type_casts(primary_key, column_names)
-        raise ArgumentError, 'No primary key given' if primary_key.blank?
+      def type_casts(column_names)
         raise ArgumentError, 'No column names given' if column_names.blank?
 
         type_casts = column_names.dup
-          .unshift(primary_key)
-          .map! { |n| 'NULL::' + columns_hash[n].sql_type }
+
+        # This is the virtual prev locking column. We're using the same name as
+        # the locking column since the column is virtual it does not exist in
+        # `columns_hash` hash. That works fine since we're only interested in
+        # the SQL type, which will always be the same for the locking and prev
+        # locking columns.
+        type_casts.insert(1, locking_column) if locking_enabled?
+        type_casts.map! { |n| 'NULL::' + columns_hash[n].sql_type }
 
         '(' + type_casts.join(', ') + ')'
       end
+
+      # rubocop:disable Metrics/MethodLength
 
       # Returns the values of the given records that have changed.
       #
@@ -304,9 +373,9 @@ module ActiveRecord
       #   record2 = Model.new(id: 2, bar: 4)
       #   records = [record1, record2]
       #
-      #   changed_attributes = Set.new(%w(foo bar))
+      #   changed_attributes = Set.new(%w(id foo bar))
       #   ActiveRecord::Base.send(
-      #     :changed_values, records, changed_attributes, 'id', Time.at(0)
+      #     :changed_values, records, changed_attributes, Time.at(0)
       #   )
       #   # => [
       #   #   [1, 3, nil, 1970-01-01 01:00:00 +0100],
@@ -314,32 +383,53 @@ module ActiveRecord
       #   # ]
       #
       # @param records [<ActiveRecord::Base>] the records that have changed
-      # @param primary_key [String] the primary key of the table
-      # @param changed_attributes [Set<String>] the attributes that have changed
+      #
+      # @param changed_attributes [Set<String>] the attributes that have
+      #   changed, including the primary key, and the locking column, if locking
+      #   is enabled
+      #
       # @param updated_at [Time] the value of the updated_at column
       #
       # @return [<<Object>>] the changed values
       #
       # @raise [ArgumentError]
       #   * if the given list of records or changed attributes is `nil` or empty
-      #   * If the given primary key is `nil` or empty
-      def changed_values(records, primary_key, changed_attributes, updated_at)
+      def changed_values(records, changed_attributes, updated_at)
         raise ArgumentError, 'No changed records given' if records.blank?
-        raise ArgumentError, 'No primary key given' if primary_key.blank?
 
         if changed_attributes.blank?
           raise ArgumentError, 'No changed attributes given'
         end
 
         extract_changed_values = lambda do |record|
+          previous_lock_value = increment_lock(record)
+
           # We're using `slice` instead of `changed_attributes` because we need
           # to include all the changed attributes from all the changed records
           # and not just the changed attributes for a given record.
-          record.slice(primary_key, *changed_attributes)
-            .merge!('updated_at' => updated_at).values
+          values = record
+            .slice(*changed_attributes)
+            .merge('updated_at' => updated_at)
+            .values
+
+          locking_enabled? ? values.insert(1, previous_lock_value) : values
         end
 
         records.map(&extract_changed_values)
+      end
+      # rubocop:enable Metrics/MethodLength
+
+      # Increments the lock column of the given record if locking is enabled.
+      #
+      # @param [ActiveRecord::Base] the record to update the lock column for
+      # @return [void]
+      def increment_lock(record)
+        return unless locking_enabled?
+
+        lock_col = locking_column
+        previous_lock_value = record.send(lock_col).to_i
+        record.send(lock_col + '=', previous_lock_value + 1)
+        previous_lock_value
       end
 
       # Returns the values of the given records that have changed, formatted for
@@ -350,7 +440,7 @@ module ActiveRecord
       #     [1, 3, 4, 1970-01-01 01:00:00 +0100],
       #     [2, 5, 6, 1970-01-01 01:00:00 +0100]
       #   ]
-      #   ActiveRecord::Base.send(:values_for_sql, records, 'id')
+      #   ActiveRecord::Base.send(:values_for_sql, records)
       #   # => "(1, 3, NULL), (2, NULL, 4)"
       #
       # @param changed_values [<<Object>>] the values that have changed
@@ -366,27 +456,75 @@ module ActiveRecord
           .join(', ')
       end
 
+      # Returns the name of the previous locking column.
+      #
+      # This column is used when locking is enabled. It's used in the where
+      # condition when looking for matching rows to update.
+      #
+      # @return [String] the name of the previous locking column
+      def prev_locking_column
+        @prev_locking_column ||= 'prev_' + locking_column
+      end
+
       # Returns the given column names formatted for SQL.
       #
       # @example
-      #   ActiveRecord::Base.send(:column_names_for_sql, 'id', %w(foo bar))
+      #   ActiveRecord::Base.send(:column_names_for_sql, %w(id foo bar))
       #   # => '"id", "foo", "bar"'
       #
-      # @param primary_key [String] the primary key of the table
       # @param column_names [<String>] the name of the columns
       #
       # @return [String] the column names formatted for SQL
       #
       # @raise [ArgumentError]
-      #   * If the given primary key is `nil` or empty
       #   * If the given list of column names is `nil` or empty
-      def column_names_for_sql(primary_key, column_names)
-        raise ArgumentError, 'No primary key given' if primary_key.blank?
+      def column_names_for_sql(column_names)
         raise ArgumentError, 'No column names given' if column_names.blank?
 
-        column_names.dup
-          .unshift(primary_key)
-          .map! { |e| connection.quote_column_name(e) }.join(', ')
+        names = column_names.dup
+        names.insert(1, prev_locking_column) if locking_enabled?
+        names.map! { |e| connection.quote_column_name(e) }.join(', ')
+      end
+
+      # Builds the SQL template for the query.
+      #
+      # This method will choose the correct template depending on if locking is
+      # enabled or not.
+      #
+      # @return [String] the SQL template
+      def build_sql_template
+        template =
+          if locking_enabled?
+            UPDATE_RECORDS_SQL_TEMPLATE + "\n" +
+              UPDATE_RECORDS_SQL_LOCKING_CONDITION
+          else
+            UPDATE_RECORDS_SQL_TEMPLATE
+          end
+
+        template + "\n" + UPDATE_RECORDS_SQL_FOOTER
+      end
+
+      # Build the option hash used for the call to `format` in
+      # {Base#sql_for_update_records}.
+      #
+      # This method will add the format options to the given hash of options as
+      # necessary if locking is enabled.
+      #
+      # @param options [{ Symbol => String }] the format options
+      #
+      # @return [{ Symbol => String }] the format options
+      def build_format_options(options)
+        if locking_enabled?
+          prev_col_name = connection.quote_column_name(prev_locking_column)
+          col_name = connection.quote_column_name(locking_column)
+
+          options.merge(
+            locking_column: col_name,
+            prev_locking_column: prev_col_name
+          )
+        else
+          options
+        end
       end
 
       # Performs the given query and returns the result of the query.
@@ -400,6 +538,53 @@ module ActiveRecord
         primary_key_column = columns_hash[primary_key]
         values = connection.execute(query).values.flatten
         values.map! { |e| primary_key_column.type_cast(e) }
+      end
+
+      # Raises an exception if the given result contain any stale objects.
+      #
+      # @param result [ActiveRecord::Update::Result] the result to check if it
+      #   contains stale objects
+      #
+      # @return [void]
+      def validate_result(result, raise_on_stale_objects)
+        return unless result.stale_objects?
+        record = result.stale_objects.first
+        return unless raise_on_stale_objects
+        raise ActiveRecord::StaleObjectError.new(record, 'update')
+      end
+
+      # Builds the result, returned from {#update_records}, based on the given
+      # arguments.
+      #
+      # @param valid [<ActiveRecord::Base>] the list of records which was
+      #   successfully validate
+      #
+      # @param failed [<ActiveRecord::Base>] the list of records which failed to
+      #   validate
+      #
+      # @param primary_keys [<Integer>] the list of primary keys that were
+      #   update
+      def build_result(valid, failed, primary_keys)
+        stale_objects = extract_stale_objects(valid, primary_keys)
+        ActiveRecord::Update::Result.new(primary_keys, failed, stale_objects)
+      end
+
+      # Extracts the stale objects from the given list of records.
+      #
+      # Will always return an empty list if locking is not enabled for this
+      # class.
+      #
+      # @param records [<ActiveRecord::Base>] the list of records to extract
+      #   the stale objects from
+      #
+      # @param primary_keys [<Integer>] the list of primary keys that were
+      #   updated
+      #
+      # @return [<ActiveRecord::Base>] the stale objects
+      def extract_stale_objects(records, primary_keys)
+        return [] unless locking_enabled?
+        primary_key_set = primary_keys.to_set
+        records.reject { |e| primary_key_set.include?(e.send(primary_key)) }
       end
 
       # Updates the `updated_at` attribute for the given records.

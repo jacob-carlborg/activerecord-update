@@ -1,10 +1,13 @@
 require 'spec_helper'
 
 describe ActiveRecord::Update::Result do
-  subject { ActiveRecord::Update::Result.new(ids, failed_records) }
+  subject do
+    ActiveRecord::Update::Result.new(ids, failed_records, stale_objects)
+  end
 
   let(:ids) { [1, 2] }
-  let(:failed_records) { [double(:failed1), double(:failed2)] }
+  let(:failed_records) { [] }
+  let(:stale_objects) { [] }
 
   describe 'initialize' do
     it 'sets the "ids" attribute' do
@@ -23,6 +26,12 @@ describe ActiveRecord::Update::Result do
       let(:failed_records) { [] }
 
       it { is_expected.to eq true }
+
+      context 'when there are stale objects' do
+        let(:stale_objects) { [double(:stale_object1), double(:stale_object1)] }
+
+        it { is_expected.to eq false }
+      end
     end
 
     context 'when there are failed records' do
@@ -59,6 +68,22 @@ describe ActiveRecord::Update::Result do
 
     context 'when there are no updated records' do
       let(:ids) { [] }
+
+      it { is_expected.to eq false }
+    end
+  end
+
+  describe 'stale_objects?' do
+    subject { super().stale_objects? }
+
+    context 'when there are stale objects' do
+      let(:stale_objects) { [double(:stale_object1), double(:stale_object1)] }
+
+      it { is_expected.to eq true }
+    end
+
+    context 'when there are no stale objects' do
+      let(:stale_objects) { [] }
 
       it { is_expected.to eq false }
     end

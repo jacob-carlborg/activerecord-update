@@ -8,6 +8,7 @@ ActiveRecord::Schema.define do
   create_table :records do |t|
     t.integer :foo
     t.integer :bar
+    t.integer :lock_version
 
     t.timestamps
   end
