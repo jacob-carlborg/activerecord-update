@@ -1,3 +1,4 @@
+require 'database_cleaner'
 require 'timecop'
 
 require 'spec_helper'
@@ -12,5 +13,11 @@ RSpec.configure do |config|
 
   config.after :suite do
     ActiveRecord::Update.database.disconnect
+  end
+
+  config.around(:each) do |example|
+    DatabaseCleaner.cleaning do
+      example.run
+    end
   end
 end
