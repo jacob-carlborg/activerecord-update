@@ -26,3 +26,8 @@ namespace :db do
     ActiveRecord::Update.database.migrate
   end
 end
+
+desc 'Start the console'
+task :c do
+  exec './bin/console'
+end
