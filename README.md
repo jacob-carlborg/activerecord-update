@@ -21,13 +21,23 @@ Or install it yourself as:
 
 ## Usage
 
-All ActiveRecord classes have a new class method added, `update_records`.
-It expects an array of ActiveRecord models. Example:
+All ActiveRecord classes have two new class methods added, `update_records` and
+`update_records!`. Both expect an array of ActiveRecord models. The difference
+between these methods is that `update_records!` will raise an error if any
+validations fail or any stale objects are identified, if optimistic locking is
+enabled.
 
 ```ruby
+class Book
+  validates :title, presence: true
+end
+
 books = Book.find(1, 2, 3)
 books.each_with_index { |book, index| book.title = "foo_#{index}" }
 Book.update_records(books)
+
+books.each { |book| book.title = nil }
+Book.update_records!(books) # will raise an ActiveRecord::RecordInvalid error
 ```
 
 ## Development
