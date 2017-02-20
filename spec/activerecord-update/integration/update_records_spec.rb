@@ -54,6 +54,11 @@ describe 'integration' do
         Record.update_records(records)
         expect(records.map(&:lock_version)).to all(eq(0))
       end
+
+      it 'does not update the updated_at attribute' do
+        expect { Record.update_records(records) }
+          .to_not change { records.map(&:updated_at) }
+      end
     end
   end
 

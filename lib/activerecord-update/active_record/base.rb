@@ -129,8 +129,10 @@ module ActiveRecord
           restore_lock(result.stale_objects, previous_lock_values)
           validate_result(result, raise_on_stale_objects)
 
-          update_timestamp(valid, timestamp)
-          mark_changes_applied(valid)
+          successful_records = valid - result.stale_objects
+          update_timestamp(successful_records, timestamp)
+          mark_changes_applied(successful_records)
+
           result
         # rubocop:disable Lint/RescueException
         rescue Exception

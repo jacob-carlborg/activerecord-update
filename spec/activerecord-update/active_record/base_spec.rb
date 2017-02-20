@@ -60,7 +60,7 @@ describe ActiveRecord::Base do
     let(:records) { [double(:record)] }
 
     let(:changed_records) { [double(:changed_record)] }
-    let(:valid) { [1, 2] }
+    let(:valid) { [records.first] }
     let(:failed_records) { [double(:failed_record)] }
     let(:current_time) { double(:current_time) }
     let(:previous_lock_values) { {} }
@@ -224,6 +224,31 @@ describe ActiveRecord::Base do
 
       it 're-raises the exception' do
         expect { update_records }.to raise_error(error)
+      end
+    end
+
+    context 'when a stale object occurs' do
+      let(:record_type) { Struct.new(:id, :updated_at) }
+      let(:record1) { record_type.new(1) }
+      let(:record2) { record_type.new(2) }
+      let(:records) { [record1, record2] }
+      let(:valid) { records }
+      let(:failed_records) { [] }
+      let(:stale_objects) { [record2] }
+      let(:successful_records) { [record1] }
+
+      it 'calls "update_timestamp" for the successful objects' do
+        expect(subject).to receive(:update_timestamp)
+          .with([record1], current_time)
+
+        update_records
+      end
+
+      it 'calls "mark_changes_applied" for the successful objects' do
+        expect(subject).to receive(:mark_changes_applied)
+          .with(successful_records)
+
+        update_records
       end
     end
   end
