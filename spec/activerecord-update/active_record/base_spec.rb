@@ -250,6 +250,20 @@ describe ActiveRecord::Base do
 
         update_records
       end
+
+      context 'when "raise_on_stale_objects" is true' do
+        let(:raise_on_stale_objects) { true }
+
+        it 'updates the timestamp for the successful records',
+          :aggregate_failures do
+
+          expect(subject).to receive(:update_timestamp)
+            .with(successful_records, current_time)
+
+          error = ActiveRecord::StaleObjectError
+          expect { update_records }.to raise_error(error)
+        end
+      end
     end
   end
 

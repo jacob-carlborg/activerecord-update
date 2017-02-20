@@ -127,12 +127,12 @@ module ActiveRecord
           ids = perform_update_records_query(query, primary_key)
           result = build_result(valid, failed, ids)
           restore_lock(result.stale_objects, previous_lock_values)
-          validate_result(result, raise_on_stale_objects)
 
           successful_records = valid - result.stale_objects
           update_timestamp(successful_records, timestamp)
           mark_changes_applied(successful_records)
 
+          validate_result(result, raise_on_stale_objects)
           result
         # rubocop:disable Lint/RescueException
         rescue Exception
