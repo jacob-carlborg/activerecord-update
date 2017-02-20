@@ -14,3 +14,6 @@ Metrics/BlockLength:
   Exclude:
     - activerecord-update.gemspec
     - spec/**/*_spec.rb
+
+Style/AlignParameters:
+  EnforcedStyle: with_fixed_indentation

@@ -37,6 +37,24 @@ describe 'integration' do
       updated_ats = records.map(&:updated_at)
       expect(updated_ats).to contain_exactly(now, now)
     end
+
+    context 'when a records fails to updated to due being stale' do
+      before(:each) do
+        record1.foo = foo
+        record2.bar = bar + 1
+        allow(Record).to receive(:extract_stale_objects).and_return(records)
+
+        # Update the database behind the back of ActiveRecord to simulate a
+        # different process updating the database causing a stale object error
+        ActiveRecord::Base.connection.exec_query('UPDATE records SET '\
+          "lock_version = #{record1.lock_version + 1} WHERE id = #{record1.id}")
+      end
+
+      it 'does not update the lock attribute' do
+        Record.update_records(records)
+        expect(records.map(&:lock_version)).to all(eq(0))
+      end
+    end
   end
 
   describe 'ActiveRecord::Base#update_records!' do
@@ -93,6 +111,13 @@ describe 'integration' do
 
         attrs = records.map { |e| e.reload.slice(:foo, :bar) }
         expect(attrs).to eq(expected)
+      end
+
+      it 'does not update the lock attribute' do
+        error = ActiveRecord::StaleObjectError
+        expect { Record.update_records!(records) }.to raise_error(error)
+
+        expect(records.map(&:lock_version)).to all(eq(0))
       end
     end
   end

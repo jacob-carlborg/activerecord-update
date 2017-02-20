@@ -98,6 +98,7 @@ module ActiveRecord
       private
 
       # rubocop:disable Metrics/MethodLength
+      # rubocop:disable Metrics/AbcSize
 
       # (see .update_records)
       #
@@ -109,9 +110,9 @@ module ActiveRecord
       #
       # @see .update_records
       def _update_records(
-          records,
-          raise_on_validation_failure:,
-          raise_on_stale_objects:
+        records,
+        raise_on_validation_failure:,
+        raise_on_stale_objects:
       )
 
         changed = changed_records(records)
@@ -119,15 +120,26 @@ module ActiveRecord
         return build_result(valid, failed, []) if valid.empty?
 
         timestamp = current_time
-        query = sql_for_update_records(valid, timestamp)
-        ids = perform_update_records_query(query, primary_key)
-        result = build_result(valid, failed, ids)
-        validate_result(result, raise_on_stale_objects)
+        previous_lock_values = {}
 
-        update_timestamp(valid, timestamp)
-        mark_changes_applied(valid)
-        result
+        begin
+          query = sql_for_update_records(valid, timestamp, previous_lock_values)
+          ids = perform_update_records_query(query, primary_key)
+          result = build_result(valid, failed, ids)
+          restore_lock(result.stale_objects, previous_lock_values)
+          validate_result(result, raise_on_stale_objects)
+
+          update_timestamp(valid, timestamp)
+          mark_changes_applied(valid)
+          result
+        # rubocop:disable Lint/RescueException
+        rescue Exception
+          # rubocop:enable Lint/RescueException
+          restore_lock(records, previous_lock_values)
+          raise
+        end
       end
+      # rubocop:enable Metrics/AbcSize
       # rubocop:enable Metrics/MethodLength
 
       # Returns the given records that are not new records and have changed.
@@ -210,12 +222,17 @@ module ActiveRecord
       # @param records [<ActiveRecord::Base>] the records that have changed
       # @param timestamp [Time] the timestamp used for the `updated_at` column
       #
+      # @param previous_lock_values [{ Integer => Integer }] on return, this
+      #   hash will contain the record ID's mapping to the previous lock
+      #   versions. In an error occurs this hash can be used to restore the lock
+      #   attribute to its previous value.
+      #
       # @return the SQL query for the #{update_records} method
       #
       # @see #update_records
       # rubocop:disable Metrics/MethodLength
       # rubocop:disable Metrics/AbcSize
-      def sql_for_update_records(records, timestamp)
+      def sql_for_update_records(records, timestamp, previous_lock_values)
         attributes = changed_attributes(records)
         quoted_changed_attributes = changed_attributes_for_sql(
           attributes, quoted_table_alias
@@ -223,7 +240,12 @@ module ActiveRecord
 
         attributes = all_attributes(attributes)
         casts = type_casts(attributes)
-        values = changed_values(records, attributes, timestamp)
+        values = changed_values(
+          records,
+          attributes,
+          timestamp,
+          previous_lock_values
+        )
         quoted_values = values_for_sql(values)
         quoted_column_names = column_names_for_sql(attributes)
         template = build_sql_template
@@ -353,6 +375,7 @@ module ActiveRecord
       end
 
       # rubocop:disable Metrics/MethodLength
+      # rubocop:disable Metrics/AbcSize
 
       # Returns the values of the given records that have changed.
       #
@@ -390,11 +413,18 @@ module ActiveRecord
       #
       # @param updated_at [Time] the value of the updated_at column
       #
+      # @param previous_lock_values [{ Integer => Integer }] on return, this
+      #   hash will contain the record ID's mapping to the previous lock
+      #   versions. In an error occurs this hash can be used to restore the lock
+      #   attribute to its previous value.
+      #
       # @return [<<Object>>] the changed values
       #
       # @raise [ArgumentError]
       #   * if the given list of records or changed attributes is `nil` or empty
-      def changed_values(records, changed_attributes, updated_at)
+      def changed_values(records, changed_attributes, updated_at,
+        previous_lock_values)
+
         raise ArgumentError, 'No changed records given' if records.blank?
 
         if changed_attributes.blank?
@@ -403,6 +433,10 @@ module ActiveRecord
 
         extract_changed_values = lambda do |record|
           previous_lock_value = increment_lock(record)
+
+          if locking_enabled?
+            previous_lock_values[record.id] = previous_lock_value
+          end
 
           # We're using `slice` instead of `changed_attributes` because we need
           # to include all the changed attributes from all the changed records
@@ -417,11 +451,17 @@ module ActiveRecord
 
         records.map(&extract_changed_values)
       end
+      # rubocop:enable Metrics/AbcSize
       # rubocop:enable Metrics/MethodLength
 
       # Increments the lock column of the given record if locking is enabled.
       #
-      # @param [ActiveRecord::Base] the record to update the lock column for
+      # @param record [ActiveRecord::Base] the record to update the lock column
+      #   for
+      #
+      # @param operation [:decrement, :increment] the operation to perform,
+      #   increment or decrement
+      #
       # @return [void]
       def increment_lock(record)
         return unless locking_enabled?
@@ -430,6 +470,27 @@ module ActiveRecord
         previous_lock_value = record.send(lock_col).to_i
         record.send(lock_col + '=', previous_lock_value + 1)
         previous_lock_value
+      end
+
+      # Restores the lock column of the given records to given values,
+      #   if locking is enabled.
+      #
+      # @param records [<ActiveRecord::Base>] the records to restore the lock
+      #   column on
+      #
+      # @param lock_values [{ Integer => Integer }] this hash contains the
+      #   record ID's mapping to the lock values that should be restored.
+      #
+      # @return [void]
+      def restore_lock(records, lock_values)
+        return if !locking_enabled? || records.empty?
+        method_name = locking_column + '='
+
+        records.each do |record|
+          lock_value = lock_values[record.id]
+          next unless lock_value
+          record.send(method_name, lock_value)
+        end
       end
 
       # Returns the values of the given records that have changed, formatted for

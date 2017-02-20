@@ -63,6 +63,7 @@ describe ActiveRecord::Base do
     let(:valid) { [1, 2] }
     let(:failed_records) { [double(:failed_record)] }
     let(:current_time) { double(:current_time) }
+    let(:previous_lock_values) { {} }
     let(:primary_key) { 'id' }
     let(:ids) { valid }
     let(:query) { double(:query) }
@@ -83,6 +84,7 @@ describe ActiveRecord::Base do
       allow(subject).to receive(:build_result).and_return(result)
       allow(subject).to receive(:perform_update_records_query).and_return(ids)
       allow(subject).to receive(:sql_for_update_records).and_return(query)
+      allow(subject).to receive(:restore_lock)
       allow(subject).to receive(:update_timestamp)
       allow(subject).to receive(:mark_changes_applied)
       allow(subject).to receive(:validate_records)
@@ -118,7 +120,7 @@ describe ActiveRecord::Base do
 
     it 'calls "sql_for_update_records"' do
       expect(subject).to receive(:sql_for_update_records)
-        .with(valid, current_time)
+        .with(valid, current_time, previous_lock_values)
 
       update_records
     end
@@ -132,6 +134,13 @@ describe ActiveRecord::Base do
 
     it 'calls "build_result"' do
       expect(subject).to receive(:build_result).with(valid, failed_records, ids)
+      update_records
+    end
+
+    it 'calls "restore_lock" for the stale objects' do
+      expect(subject).to receive(:restore_lock)
+        .with(stale_objects, previous_lock_values)
+
       update_records
     end
 
@@ -196,6 +205,25 @@ describe ActiveRecord::Base do
         it 'returns the failed objects' do
           expect(update_records.failed_records).to match_array(failed_records)
         end
+      end
+    end
+
+    context 'when an exception has been raised' do
+      let(:error) { 'foo' }
+
+      before(:each) do
+        allow(subject).to receive(:sql_for_update_records).and_raise(error)
+      end
+
+      it 'calls "restore_lock" for all records', :aggregate_failures do
+        expect(subject).to receive(:restore_lock)
+          .with(records, previous_lock_values)
+
+        expect { update_records }.to raise_error(error)
+      end
+
+      it 're-raises the exception' do
+        expect { update_records }.to raise_error(error)
       end
     end
   end
@@ -400,6 +428,7 @@ describe ActiveRecord::Base do
 
     let(:primary_key) { 'id' }
     let(:timestamp) { Time.at(0).utc }
+    let(:previous_lock_values) { {} }
     let(:changed_attributes) { %w(foo bar updated_at) }
     let(:all_attributes) { [primary_key] + changed_attributes }
     let(:quoted_table_alias) { 'foos_2' }
@@ -519,7 +548,9 @@ describe ActiveRecord::Base do
     end
 
     def sql_for_update_records
-      subject.send(:sql_for_update_records, records, timestamp)
+      subject.send(
+        :sql_for_update_records, records, timestamp, previous_lock_values
+      )
     end
 
     it 'returns the SQL used for the "update_records" method' do
@@ -550,7 +581,7 @@ describe ActiveRecord::Base do
 
     it 'calls "changed_values" with the records and the changed attributes' do
       expect(subject).to receive(:changed_values)
-        .with(records, all_attributes, timestamp)
+        .with(records, all_attributes, timestamp, previous_lock_values)
 
       sql_for_update_records
     end
@@ -950,6 +981,7 @@ describe ActiveRecord::Base do
     let(:updated_at) { Time.at(0) }
     let(:connection) { double(:connection) }
     let(:locking_enabled) { false }
+    let(:previous_lock_values) { {} }
 
     let(:records) do
       [
@@ -966,7 +998,11 @@ describe ActiveRecord::Base do
 
     def changed_values
       subject.send(
-        :changed_values, records, changed_attributes, updated_at
+        :changed_values,
+        records,
+        changed_attributes,
+        updated_at,
+        previous_lock_values
       )
     end
 
@@ -1036,6 +1072,14 @@ describe ActiveRecord::Base do
       end
     end
 
+    context 'when locking is disabled' do
+      let(:locking_enabled) { false }
+
+      it 'does not change the "previous_lock_values" parameter' do
+        expect { changed_values }.to_not change { previous_lock_values }
+      end
+    end
+
     context 'when locking is enabled' do
       # rubocop:disable Style/ClassAndModuleChildren
       class self::Model < superclass::Model
@@ -1065,6 +1109,12 @@ describe ActiveRecord::Base do
         ]
 
         expect(changed_values).to eq(expected)
+      end
+
+      it 'adds the previous locking values to "previous_lock_values"' do
+        expected = records.map { |r| [r.id, r.lock_version] }.to_h
+        changed_values
+        expect(previous_lock_values).to eq(expected)
       end
     end
   end
@@ -1098,12 +1148,56 @@ describe ActiveRecord::Base do
     context 'when locking is enabled' do
       let(:locking_enabled) { true }
 
-      it 'does not changed the lock value' do
+      it 'changes the lock value' do
         expect { increment_lock }.to change(record, locking_column).by(1)
       end
 
       it 'returns the previous lock value' do
         expect(increment_lock).to eq(lock_value)
+      end
+    end
+  end
+
+  describe 'restore_lock' do
+    let(:record_type) { Struct.new(:id, :lock_version) }
+    let!(:records) { Array.new(2) { |e| record_type.new(e, e + 1) } }
+    let(:lock_values) { records.map { |e| [e.id, e.lock_version - 1] }.to_h }
+
+    before(:each) do
+      allow(subject).to receive(:locking_column).and_return('lock_version')
+      allow(subject).to receive(:locking_enabled?).and_return(locking_enabled)
+    end
+
+    def restore_lock
+      subject.send(:restore_lock, records, lock_values)
+    end
+
+    context 'when locking is disabled' do
+      let(:locking_enabled) { false }
+
+      it 'does not change the lock values' do
+        expect { restore_lock }.to_not change { records.map(&:lock_version) }
+      end
+
+      it 'returns nil' do
+        expect(restore_lock).to be_nil
+      end
+    end
+
+    context 'when locking is enabled' do
+      let(:locking_enabled) { true }
+
+      it 'restores the lock values' do
+        restore_lock
+        expect(records.map(&:lock_version)).to eq(lock_values.values)
+      end
+
+      context 'when the a record does not exist in "lock_values"' do
+        let(:lock_values) { {} }
+
+        it 'does not change the lock values' do
+          expect { restore_lock }.to_not change { records.map(&:lock_version) }
+        end
       end
     end
   end
