@@ -17,3 +17,14 @@ Metrics/BlockLength:
 
 Style/AlignParameters:
   EnforcedStyle: with_fixed_indentation
+
+Style/EmptyMethod:
+  EnforcedStyle: expanded
+
+AllCops:
+  Exclude:
+    # Ignore what's in core_ext since those files are copied directly from
+    # ActiveSupport
+    - 'lib/activerecord-update/core_ext/**/*'
+    # Everything in this directory is automatically generated
+    - 'gemfiles/**/*'

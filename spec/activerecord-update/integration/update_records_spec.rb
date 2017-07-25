@@ -46,7 +46,7 @@ describe 'integration' do
 
         # Update the database behind the back of ActiveRecord to simulate a
         # different process updating the database causing a stale object error
-        ActiveRecord::Base.connection.exec_query('UPDATE records SET '\
+        ActiveRecord::Base.connection.execute('UPDATE records SET '\
           "lock_version = #{record1.lock_version + 1} WHERE id = #{record1.id}")
       end
 
@@ -98,7 +98,7 @@ describe 'integration' do
 
         # Update the database behind the back of ActiveRecord to simulate a
         # different process updating the database causing a stale object error
-        ActiveRecord::Base.connection.exec_query('UPDATE records SET '\
+        ActiveRecord::Base.connection.execute('UPDATE records SET '\
           "lock_version = #{record1.lock_version + 1} WHERE id = #{record1.id}")
       end
 

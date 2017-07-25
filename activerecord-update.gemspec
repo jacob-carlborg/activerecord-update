@@ -31,18 +31,21 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{^exe/}) { |f| File.basename(f) }
   spec.require_paths = ['lib']
 
-  spec.add_dependency 'activerecord', '4.1.9'
-  spec.add_dependency 'activesupport', '4.1.9'
+  spec.required_ruby_version = '>= 1.9.3'
 
-  spec.add_development_dependency 'database_cleaner', '~> 1.5'
+  spec.add_dependency 'activerecord', '>= 2.3.5', '<= 4.1.9'
+  spec.add_dependency 'activesupport', '>= 2.3.5', '<= 4.1.9'
+
+  spec.add_development_dependency 'appraisal', '~> 2.2'
   spec.add_development_dependency 'bundler', '~> 1.13'
+  spec.add_development_dependency 'database_cleaner', '>= 1.4.1', '< 1.6'
   spec.add_development_dependency 'pg', '0.18.2'
   spec.add_development_dependency 'pry-rescue', '~> 1.4'
   spec.add_development_dependency 'pry-stack_explorer', '~> 0.4.9'
   spec.add_development_dependency 'rake', '~> 10.0'
   spec.add_development_dependency 'redcarpet', '~> 3.3'
   spec.add_development_dependency 'rspec', '~> 3.5'
-  spec.add_development_dependency 'rubocop', '0.46.0'
+  spec.add_development_dependency 'rubocop', '>= 0.41.2', '<= 0.46.0'
   spec.add_development_dependency 'ruby-prof', '~> 0.16'
   spec.add_development_dependency 'simplecov', '~> 0.12'
   spec.add_development_dependency 'timecop', '~> 0.8'

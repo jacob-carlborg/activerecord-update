@@ -3,17 +3,71 @@ require 'spec_helper'
 describe ActiveRecord::Base do
   subject { ActiveRecord::Base }
 
+  module Dirty
+    def update
+    end
+
+    def reload
+    end
+
+    def self.included(mod)
+      mod.module_eval do
+        if defined?(ActiveModel::Dirty)
+          include ActiveModel::Dirty
+        else
+          include ActiveRecord::Dirty
+        end
+      end
+    end
+  end
+
   # rubocop:disable Style/ClassAndModuleChildren
   class self::Model
-    include ActiveModel::Model
+    COLUMNS = %w(id foo bar).freeze
 
-    attr_accessor :id
-    attr_accessor :foo
-    attr_accessor :bar
+    def save
+    end
+
+    def save!
+    end
+
+    if defined?(ActiveModel::Model)
+      include ActiveModel::Model
+    else
+      include ActiveRecord::Validations
+      include ActiveRecord::AttributeMethods
+    end
+
+    COLUMNS.each do |name|
+      attr_accessor name.to_sym
+    end
+
+    def initialize(params = {})
+      if params
+        params.each do |attr, value|
+          public_send("#{attr}=", value)
+        end
+      end
+
+      super()
+    end
 
     def slice(*keys)
-      hash = { id: id, foo: foo, bar: bar }
-      ActiveSupport::HashWithIndifferentAccess.new(hash).slice(*keys)
+      hash = COLUMNS.map { |e| [e.to_sym, send(e)] }.to_h
+
+      cls =
+        if defined?(ActiveSupport::HashWithIndifferentAccess)
+          ActiveSupport::HashWithIndifferentAccess
+        else
+          HashWithIndifferentAccess
+        end
+
+      cls.new(hash).slice(*keys)
+    end
+
+    def self.columns_hash
+      column = ActiveRecord::ConnectionAdapters::Column
+      COLUMNS.map { |e| [e, column.new(e, nil, 'integer', nil)] }.to_h
     end
   end
   # rubocop:enable Style/ClassAndModuleChildren
@@ -256,7 +310,6 @@ describe ActiveRecord::Base do
 
         it 'updates the timestamp for the successful records',
           :aggregate_failures do
-
           expect(subject).to receive(:update_timestamp)
             .with(successful_records, current_time)
 
@@ -271,6 +324,24 @@ describe ActiveRecord::Base do
     self::Model = Struct.new(:changed?, :new_record?) do
       def initialize(params = {})
         params.each { |k, v| public_send(:"#{k}=", v) }
+      end
+
+      # This is needed for Ruby 1.9.3, otherwise changed?= does not work
+      define_method :'changed?=' do |value|
+        self[:changed?] = value
+      end
+
+      # This is needed for Ruby 1.9.3, otherwise new_record?= does not work
+      define_method :'new_record?=' do |value|
+        self[:new_record?] = value
+      end
+
+      def changed?
+        self[:changed?]
+      end
+
+      def new_record?
+        self[:new_record?]
       end
     end
 
@@ -333,7 +404,18 @@ describe ActiveRecord::Base do
 
     let(:model) do
       Struct.new(:valid?) do
-        include ActiveModel::Model
+        def save
+        end
+
+        def save!
+        end
+
+        if defined?(ActiveModel::Model)
+          include ActiveModel::Model
+        else
+          include ActiveRecord::Validations
+          include ActiveRecord::AttributeMethods
+        end
 
         def initialize(valid)
           self[:valid?] = valid
@@ -341,6 +423,22 @@ describe ActiveRecord::Base do
 
         def self.i18n_scope
           :activerecord
+        end
+
+        def self.columns_hash
+          {}
+        end
+
+        def self.primary_key
+          'id'
+        end
+
+        def new_record?
+          true
+        end
+
+        def valid?
+          self[:valid?]
         end
       end
     end
@@ -416,23 +514,47 @@ describe ActiveRecord::Base do
   describe 'sql_for_update_records' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Model < superclass::Model
-      include ActiveModel::Dirty
+      include Dirty
 
-      define_attribute_methods :id, :foo, :bar
+      define_attribute_methods :id, :foo, :bar if defined?(ActiveModel::Dirty)
+
+      def self.ancestors
+        super + [ActiveRecord::Base]
+      end
+
+      def self.primary_key
+        'id'
+      end
 
       def id=(value)
-        id_will_change! unless value == @id
+        return if value == @id
+        @attributes ||= {}
+        @attributes['id'] = value
+        id_will_change!
         @id = value
       end
 
       def foo=(value)
-        foo_will_change! unless value == @foo
+        return if value == @foo
+        @attributes ||= {}
+        @attributes['foo'] = value
+        foo_will_change!
         @foo = value
       end
 
       def bar=(value)
-        bar_will_change! unless value == @bar
+        return if value == @bar
+        @attributes ||= {}
+        @attributes['bar'] = value
+        bar_will_change!
         @bar = value
+      end
+
+      def clone_attribute_value(reader_method, attribute_name)
+        value = send(reader_method, attribute_name)
+        value.duplicable? ? value.clone : value
+      rescue TypeError, NoMethodError
+        value
       end
     end
 
@@ -453,7 +575,7 @@ describe ActiveRecord::Base do
     let(:column) { Struct.new(:name, :sql_type, :primary) }
 
     let(:columns_hash) do
-      Hash[all_attributes.map { |e| [e, column.new(e, type_map[e])] }]
+      all_attributes.map { |e| [e, column.new(e, type_map[e])] }.to_h
     end
 
     let(:type_map) do
@@ -541,7 +663,7 @@ describe ActiveRecord::Base do
         values: values_for_sql,
         alias: quoted_table_alias,
         columns: column_names_for_sql,
-        primary_key: subject.quoted_primary_key
+        primary_key: subject.send(:quoted_primary_key)
       }
     end
 
@@ -754,18 +876,39 @@ describe ActiveRecord::Base do
   describe 'changed_attributes' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Model < superclass::Model
-      include ActiveModel::Dirty
+      include Dirty
 
-      define_attribute_methods :foo, :bar
+      define_attribute_methods :foo, :bar if defined?(ActiveModel::Dirty)
+
+      def self.ancestors
+        super + [ActiveRecord::Base]
+      end
+
+      def self.primary_key
+        'id'
+      end
 
       def foo=(value)
-        foo_will_change! unless value == @foo
+        return if value == @foo
+        @attributes ||= {}
+        @attributes['foo'] = value
+        foo_will_change!
         @foo = value
       end
 
       def bar=(value)
-        bar_will_change! unless value == @bar
+        return if value == @bar
+        @attributes ||= {}
+        @attributes['bar'] = value
+        bar_will_change!
         @bar = value
+      end
+
+      def clone_attribute_value(reader_method, attribute_name)
+        value = send(reader_method, attribute_name)
+        value.duplicable? ? value.clone : value
+      rescue TypeError, NoMethodError
+        value
       end
     end
     # rubocop:enable Style/ClassAndModuleChildren
@@ -1055,7 +1198,7 @@ describe ActiveRecord::Base do
     end
 
     it 'does not change the input records', :aggregate_failures do
-      input = records.deep_dup
+      input = records.map(&:dup)
       expect(records).to_not be(input)
 
       changed_values
@@ -1477,6 +1620,8 @@ describe ActiveRecord::Base do
       allow(subject).to receive(:connection).and_return(connection)
       allow(connection).to receive(:execute).and_return(result)
       allow(connection).to receive(:schema_cache).and_return(schema_cache)
+      # For ActiveRecord 2.3
+      allow(connection).to receive(:columns).and_return(columns)
 
       allow(schema_cache).to receive(:columns).and_return(columns)
       allow(schema_cache).to receive(:table_exists?).and_return(true)
@@ -1538,7 +1683,12 @@ describe ActiveRecord::Base do
           begin
             validate_result
           rescue ActiveRecord::StaleObjectError => e
-            expect(e.record).to eq(stale_object1)
+            # ActiveRecord 2.3 doesn't have the `record` method
+            if e.respond_to?(:record)
+              expect(e.record).to eq(stale_object1)
+            else
+              expect(true).to eq(true)
+            end
           else
             # if this fails it means that the above call to `validate_result`
             # didn't raise an StaleObjectError error
@@ -1648,17 +1798,35 @@ describe ActiveRecord::Base do
   describe 'mark_changes_applied' do
     # rubocop:disable Style/ClassAndModuleChildren
     class self::Model < superclass::Model
-      include ActiveModel::Dirty
+      include Dirty
 
-      define_attribute_methods :foo
+      define_attribute_methods :foo if defined?(ActiveModel::Dirty)
 
       def attribute(_)
         @foo
       end
 
+      def self.ancestors
+        super + [ActiveRecord::Base]
+      end
+
+      def self.primary_key
+        'id'
+      end
+
       def foo=(value)
-        foo_will_change! unless value == @foo
+        return if value == @foo
+        @attributes ||= {}
+        @attributes['foo'] = value
+        foo_will_change!
         @foo = value
+      end
+
+      def clone_attribute_value(reader_method, attribute_name)
+        value = send(reader_method, attribute_name)
+        value.duplicable? ? value.clone : value
+      rescue TypeError, NoMethodError
+        value
       end
     end
     # rubocop:end Style/ClassAndModuleChildren
@@ -1676,6 +1844,26 @@ describe ActiveRecord::Base do
     it 'marks the changes applied for all the records' do
       mark_changes_applied
       expect(records.none?(&:changed?)).to be true
+    end
+
+    context 'when the record responds to the "changes_applied" method ' \
+     '(ActiveRecord 4.1)' do
+      it 'marks the changes applied for all the records' do
+        mark_changes_applied
+        expect(records).to_not include(be_changed)
+      end
+    end
+
+    context 'when the record does not respond to the "changes_applied" ' \
+      'method (ActiveRecord 2.3)' do
+      class self::Model < superclass::Model
+        undef_method :changes_applied if ActiveRecord::VERSION::MAJOR > 2
+      end
+
+      it 'marks the changes applied for all the records' do
+        mark_changes_applied
+        expect(records).to_not include(be_changed)
+      end
     end
   end
 end

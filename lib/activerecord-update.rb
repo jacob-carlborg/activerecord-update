@@ -1,6 +1,17 @@
 # rubocop:disable Style/FileName
 
-require 'active_support/core_ext/string/strip'
+begin
+  require 'active_support/core_ext/string/strip'
+rescue LoadError
+  require 'activerecord-update/core_ext/string/strip'
+end
+
+begin
+  require 'active_support/core_ext/hash/slice'
+rescue LoadError
+  require 'activerecord-update/core_ext/hash/slice'
+end
+
 require 'active_record'
 
 require 'activerecord-update/version'

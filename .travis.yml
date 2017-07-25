@@ -5,6 +5,16 @@ rvm:
   - 2.3.3
   - 2.1.5
 
+gemfile:
+  - gemfiles/4.1.gemfile
+
+matrix:
+  include:
+    - rvm: 1.9.3
+      gemfile: gemfiles/2.3.gemfile
+      before_script:
+        - ./before_script2.3.sh
+
 cache: bundler
 before_install: gem install bundler -v 1.13.6
 

@@ -40,6 +40,11 @@ books.each { |book| book.title = nil }
 Book.update_records!(books) # will raise an ActiveRecord::RecordInvalid error
 ```
 
+## Supported Versions
+
+* Ruby 1.9.3 or later
+* ActiveRecord 2.3.x and 4.1.x
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. Then,

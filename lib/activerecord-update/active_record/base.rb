@@ -111,9 +111,11 @@ module ActiveRecord
       # @see .update_records
       def _update_records(
         records,
-        raise_on_validation_failure:,
-        raise_on_stale_objects:
+        options
       )
+
+        raise_on_validation_failure = options[:raise_on_validation_failure]
+        raise_on_stale_objects = options[:raise_on_stale_objects]
 
         changed = changed_records(records)
         valid, failed = validate_records(changed, raise_on_validation_failure)
@@ -275,7 +277,13 @@ module ActiveRecord
       # @return [String] the table alias quoted.
       def quoted_table_alias
         @quoted_table_alias ||=
-          connection.quote_table_name(arel_table.alias.name)
+          connection.quote_table_name(table_name + '_2')
+      end
+
+      unless defined?(quoted_primary_key)
+        def quoted_primary_key
+          @quoted_primary_key ||= connection.quote_column_name(primary_key)
+        end
       end
 
       # Quotes/escapes the given column value to prevent SQL injection attacks.
@@ -443,8 +451,7 @@ module ActiveRecord
           # We're using `slice` instead of `changed_attributes` because we need
           # to include all the changed attributes from all the changed records
           # and not just the changed attributes for a given record.
-          values = record
-            .slice(*changed_attributes)
+          values = slice(record, *changed_attributes)
             .merge('updated_at' => updated_at)
             .values
 
@@ -455,6 +462,17 @@ module ActiveRecord
       end
       # rubocop:enable Metrics/AbcSize
       # rubocop:enable Metrics/MethodLength
+
+      # Returns a hash of the given methods with their names as keys and
+      # returned values as values.
+      def slice(record, *methods)
+        if record.respond_to?(:slice)
+          record.slice(*methods)
+        else
+          result = methods.map! { |m| [m, record.public_send(m)] }
+          Hash[result].with_indifferent_access
+        end
+      end
 
       # Increments the lock column of the given record if locking is enabled.
       #
@@ -613,6 +631,12 @@ module ActiveRecord
         return unless result.stale_objects?
         record = result.stale_objects.first
         return unless raise_on_stale_objects
+
+        if ActiveRecord::VERSION::MAJOR == 2
+          message = "Attempted to update a stale object: #{record.class.name}"
+          raise ActiveRecord::StaleObjectError, message
+        end
+
         raise ActiveRecord::StaleObjectError.new(record, 'update')
       end
 
@@ -670,7 +694,13 @@ module ActiveRecord
       #
       # @return [void]
       def mark_changes_applied(records)
-        records.each { |e| e.send(:changes_applied) }
+        if records.first.respond_to?(:changes_applied, true)
+          records.each { |e| e.send(:changes_applied) }
+        else # ActiveRecord 3.2
+          records.each do |e|
+            e.instance_variable_get(:@changed_attributes).clear
+          end
+        end
       end
     end
   end

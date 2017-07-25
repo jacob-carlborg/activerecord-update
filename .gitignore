@@ -1,4 +1,4 @@
-/.bundle/
+.bundle/
 /.yardoc
 /Gemfile.lock
 /_yardoc/
@@ -8,3 +8,4 @@
 /profile_reports/
 /spec/reports/
 /tmp/
+*.gemfile.lock

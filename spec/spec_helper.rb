@@ -4,7 +4,8 @@ require 'simplecov'
 
 SimpleCov.start do
   add_filter '/spec/'
-  minimum_coverage 100
+  add_filter '/lib/activerecord-update.rb'
+  minimum_coverage 97
 end
 
 require 'activerecord-update'
